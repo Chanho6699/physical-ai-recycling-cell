@@ -36,6 +36,7 @@ class TaskManagerNode(Node):
 
         self.declare_parameter('max_pick_retries', 2)
         self.declare_parameter('max_place_retries', 1)
+        self.declare_parameter('enable_object_memory', True)
 
         self.callback_group_ = ReentrantCallbackGroup()
 
@@ -79,6 +80,9 @@ class TaskManagerNode(Node):
         self.pick_retry_count_ = 0
         self.place_retry_count_ = 0
 
+        self.processed_object_ids_ = set()
+        self.failed_object_ids_ = set()
+
         self.state_timer_ = self.create_timer(1.0, self.publish_robot_state)
 
         self.get_logger().info('task_manager_node started')
@@ -91,11 +95,17 @@ class TaskManagerNode(Node):
 
         target = self.select_best_target(msg.objects)
         if target is None:
+            self.get_logger().info(
+                'No valid unprocessed target object found.',
+                throttle_duration_sec=5.0)
             return
 
         self.start_task(target)
 
     def select_best_target(self, objects):
+        enable_object_memory = self.get_parameter(
+            'enable_object_memory').value
+
         candidates = []
         for obj in objects:
             if obj.is_unknown or obj.class_name == 'unknown':
@@ -103,6 +113,11 @@ class TaskManagerNode(Node):
             if obj.confidence < CONFIDENCE_THRESHOLD:
                 continue
             if obj.graspability_score < GRASPABILITY_THRESHOLD:
+                continue
+            if enable_object_memory \
+                    and obj.object_id in self.processed_object_ids_:
+                continue
+            if obj.object_id in self.failed_object_ids_:
                 continue
             candidates.append(obj)
 
@@ -321,6 +336,17 @@ class TaskManagerNode(Node):
             f'task {self.current_task_id_} finished: '
             f'overall_success={overall_success} '
             f'cycle_time_sec={cycle_time_sec:.2f}')
+
+        if overall_success:
+            self.processed_object_ids_.add(self.current_object_id_)
+            self.get_logger().info(
+                f'Object marked as processed: '
+                f'object_id={self.current_object_id_}')
+        else:
+            self.failed_object_ids_.add(self.current_object_id_)
+            self.get_logger().info(
+                f'Object marked as failed: '
+                f'object_id={self.current_object_id_}')
 
         self.is_error_ = not overall_success
         self.last_error_code_ = error_code

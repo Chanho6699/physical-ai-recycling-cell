@@ -1,0 +1,11 @@
+string object_id
+string class_name
+geometry_msgs/Pose target_pose
+float32 graspability_score
+---
+bool success
+string error_code
+string message
+---
+string current_stage
+float32 progress

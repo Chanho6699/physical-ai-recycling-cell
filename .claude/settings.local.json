@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pkill -9 -f \"ros2 launch recycling_cell_bringup\")",
+      "Bash(kill -9 88418 88419 88420 89021 89025 89026 89027)",
+      "Bash(kill -INT 89413)",
+      "Bash(kill -9 89413 89417 89418 89419)",
+      "Bash(kill -9 95599 95603)",
+      "Bash(kill -INT 96048)",
+      "Bash(kill -9 97627 97631 97632 97633)"
+    ]
+  }
+}

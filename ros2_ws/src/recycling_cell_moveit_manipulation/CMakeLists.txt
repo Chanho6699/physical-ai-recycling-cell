@@ -12,6 +12,9 @@ find_package(rclcpp_action REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(recycling_cell_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
+find_package(moveit_msgs REQUIRED)
+find_package(shape_msgs REQUIRED)
+find_package(control_msgs REQUIRED)
 
 add_executable(moveit_manipulation_node src/moveit_manipulation_node.cpp)
 target_compile_features(moveit_manipulation_node PUBLIC c_std_99 cxx_std_17)
@@ -21,6 +24,9 @@ ament_target_dependencies(moveit_manipulation_node
   geometry_msgs
   recycling_cell_msgs
   moveit_ros_planning_interface
+  moveit_msgs
+  shape_msgs
+  control_msgs
 )
 
 install(TARGETS moveit_manipulation_node

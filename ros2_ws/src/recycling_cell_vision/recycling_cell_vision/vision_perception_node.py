@@ -29,7 +29,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Pose
 from recycling_cell_msgs.msg import DetectedObject, DetectedObjectArray
 
-VALID_IMAGE_SOURCES = ('synthetic', 'image_file', 'camera')
+VALID_IMAGE_SOURCES = ('synthetic', 'image_file', 'camera', 'image_folder')
 
 MOCK_CLASSES = ['plastic_bottle', 'can', 'paper_cup', 'glass_bottle']
 
@@ -87,6 +87,11 @@ class VisionPerceptionNode(Node):
         self.declare_parameter('nms_threshold', 0.45)
         self.declare_parameter('use_mock_pose_for_onnx', True)
 
+        self.declare_parameter('image_folder_path', '')
+        self.declare_parameter('image_extensions', '.jpg,.jpeg,.png')
+        self.declare_parameter('loop_folder', False)
+        self.declare_parameter('publish_once_per_image', True)
+
         image_source = self.get_parameter('image_source').value
         if image_source not in VALID_IMAGE_SOURCES:
             self.get_logger().warn(
@@ -105,6 +110,12 @@ class VisionPerceptionNode(Node):
         self.camera_ = None
         if self.image_source_ == 'camera':
             self._open_camera()
+
+        self.image_folder_files_ = []
+        self.image_folder_index_ = 0
+        self.image_folder_finished_logged_ = False
+        if self.image_source_ == 'image_folder':
+            self._load_image_folder()
 
         self.onnx_session_ = None
         self.onnx_input_name_ = None
@@ -177,6 +188,101 @@ class VisionPerceptionNode(Node):
             return frame
 
         return None
+
+    # ---------- image_folder scanning ----------
+
+    def _load_image_folder(self):
+        folder_path = self.get_parameter('image_folder_path').value
+        extensions = tuple(
+            ext.strip().lower() for ext in
+            self.get_parameter('image_extensions').value.split(',')
+            if ext.strip())
+
+        if not folder_path or not os.path.isdir(folder_path):
+            self.get_logger().error(
+                f"image_source=image_folder but image_folder_path="
+                f"'{folder_path}' is not a valid directory")
+            return
+
+        files = sorted(
+            os.path.join(folder_path, name)
+            for name in os.listdir(folder_path)
+            if name.lower().endswith(extensions)
+        )
+
+        if not files:
+            self.get_logger().error(
+                f'No images with extensions {extensions} found in '
+                f"image_folder_path='{folder_path}'")
+            return
+
+        self.image_folder_files_ = files
+        self.get_logger().info(
+            f'image_folder scan found {len(files)} image(s) in '
+            f"'{folder_path}'")
+
+    def _tick_image_folder(self):
+        if not self.image_folder_files_:
+            # Already logged in _load_image_folder(); nothing to do.
+            return
+
+        total = len(self.image_folder_files_)
+
+        if self.image_folder_index_ >= total:
+            if self.get_parameter('loop_folder').value:
+                self.image_folder_index_ = 0
+            else:
+                if not self.image_folder_finished_logged_:
+                    self.get_logger().info('Image folder scan completed')
+                    self.image_folder_finished_logged_ = True
+                return
+
+        image_path = self.image_folder_files_[self.image_folder_index_]
+        image_name = os.path.basename(image_path)
+
+        self.get_logger().info(
+            f'Processing image [{self.image_folder_index_ + 1}/{total}]: '
+            f'{image_name}')
+
+        frame = None
+        if not CV2_AVAILABLE:
+            self.get_logger().error(
+                'image_source=image_folder requires OpenCV (cv2), which '
+                'is not installed. Cannot load images.')
+        else:
+            frame = cv2.imread(image_path)
+            if frame is None:
+                self.get_logger().error(
+                    f"Failed to load image from image_path='{image_path}'")
+
+        objects = None
+        if self.get_parameter('enable_onnx_inference').value \
+                and frame is not None:
+            objects = self._run_onnx_pipeline(frame)
+
+        if objects is None:
+            if self.get_parameter('enable_mock_detection').value:
+                objects = [self._build_mock_object()]
+            else:
+                objects = []
+
+        self._publish_objects_for_current_image(objects, image_name)
+
+        # publish_once_per_image=false intentionally keeps re-processing
+        # the same image every tick instead of advancing -- useful for
+        # dwelling on one image without switching to image_file mode.
+        if self.get_parameter('publish_once_per_image').value:
+            self.image_folder_index_ += 1
+
+    def _publish_objects_for_current_image(self, objects, image_name):
+        msg = DetectedObjectArray()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.get_parameter('base_frame_id').value
+        msg.objects = list(objects)
+
+        self.publisher_.publish(msg)
+        self.get_logger().info(
+            f'Published {len(msg.objects)} detections from {image_name}')
 
     # ---------- ONNX model setup ----------
 
@@ -316,6 +422,10 @@ class VisionPerceptionNode(Node):
         if not rclpy.ok():
             return
 
+        if self.image_source_ == 'image_folder':
+            self._tick_image_folder()
+            return
+
         frame = self._acquire_frame()
 
         if self.get_parameter('enable_onnx_inference').value \
@@ -393,7 +503,7 @@ class VisionPerceptionNode(Node):
 
     # ---------- mock detection (v1, unchanged) ----------
 
-    def _spawn_mock_object(self):
+    def _build_mock_object(self):
         object_id = f'vision_obj_{self.next_object_index_}'
         self.next_object_index_ += 1
 
@@ -407,7 +517,7 @@ class VisionPerceptionNode(Node):
             MOCK_POSE_Z,
         )
 
-        obj = self._make_object(
+        return self._make_object(
             object_id=object_id,
             class_name=class_name,
             confidence=random.uniform(0.90, 0.97),
@@ -416,11 +526,14 @@ class VisionPerceptionNode(Node):
             graspability_score=random.uniform(0.80, 0.92),
             is_unknown=False,
         )
+
+    def _spawn_mock_object(self):
+        obj = self._build_mock_object()
         self.active_objects_.append(obj)
 
         self.get_logger().info(
-            f'mock detection spawned: object_id={object_id} '
-            f'class_name={class_name}')
+            f'mock detection spawned: object_id={obj.object_id} '
+            f'class_name={obj.class_name}')
 
     def _publish_active_objects(self):
         if not self.active_objects_:

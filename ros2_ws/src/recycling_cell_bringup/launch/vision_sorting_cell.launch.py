@@ -7,6 +7,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, Time
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -35,17 +36,82 @@ def generate_launch_description():
         description='OpenCV camera device index, used when image_source=camera',
     )
 
+    enable_onnx_inference_arg = DeclareLaunchArgument(
+        'enable_onnx_inference',
+        default_value='false',
+        description='Run ONNX Runtime YOLO inference instead of mock detections',
+    )
+
+    onnx_model_path_arg = DeclareLaunchArgument(
+        'onnx_model_path',
+        default_value='',
+        description='Path to a .onnx YOLO model, used when enable_onnx_inference=true',
+    )
+
+    confidence_threshold_arg = DeclareLaunchArgument(
+        'confidence_threshold',
+        default_value='0.5',
+        description='Minimum ONNX detection confidence to keep',
+    )
+
+    onnx_input_size_arg = DeclareLaunchArgument(
+        'onnx_input_size',
+        default_value='640',
+        description='Square input resolution the ONNX model expects',
+    )
+
     summary_period_sec_arg = DeclareLaunchArgument(
         'summary_period_sec',
-        default_value='10.0',
+        default_value='5.0',
         description='Seconds between monitor_node [CellMetrics] summaries',
+    )
+
+    image_folder_path_arg = DeclareLaunchArgument(
+        'image_folder_path',
+        default_value='',
+        description='Directory to scan, used when image_source=image_folder',
+    )
+
+    image_extensions_arg = DeclareLaunchArgument(
+        'image_extensions',
+        default_value='.jpg,.jpeg,.png',
+        description='Comma-separated file extensions to include when scanning image_folder_path',
+    )
+
+    loop_folder_arg = DeclareLaunchArgument(
+        'loop_folder',
+        default_value='false',
+        description='Restart from the first image after the last one, instead of stopping',
+    )
+
+    publish_once_per_image_arg = DeclareLaunchArgument(
+        'publish_once_per_image',
+        default_value='true',
+        description='Advance to the next image every tick instead of dwelling on the current one',
     )
 
     image_source = LaunchConfiguration('image_source')
     image_path = LaunchConfiguration('image_path')
-    publish_period_sec = LaunchConfiguration('publish_period_sec')
-    camera_index = LaunchConfiguration('camera_index')
-    summary_period_sec = LaunchConfiguration('summary_period_sec')
+    onnx_model_path = LaunchConfiguration('onnx_model_path')
+    image_folder_path = LaunchConfiguration('image_folder_path')
+    image_extensions = LaunchConfiguration('image_extensions')
+
+    publish_period_sec = ParameterValue(
+        LaunchConfiguration('publish_period_sec'), value_type=float)
+    camera_index = ParameterValue(
+        LaunchConfiguration('camera_index'), value_type=int)
+    enable_onnx_inference = ParameterValue(
+        LaunchConfiguration('enable_onnx_inference'), value_type=bool)
+    confidence_threshold = ParameterValue(
+        LaunchConfiguration('confidence_threshold'), value_type=float)
+    onnx_input_size = ParameterValue(
+        LaunchConfiguration('onnx_input_size'), value_type=int)
+    summary_period_sec = ParameterValue(
+        LaunchConfiguration('summary_period_sec'), value_type=float)
+    loop_folder = ParameterValue(
+        LaunchConfiguration('loop_folder'), value_type=bool)
+    publish_once_per_image = ParameterValue(
+        LaunchConfiguration('publish_once_per_image'), value_type=bool)
 
     panda_demo_launch = os.path.join(
         get_package_share_directory('moveit_resources_panda_moveit_config'),
@@ -92,6 +158,14 @@ def generate_launch_description():
                     'image_path': image_path,
                     'publish_period_sec': publish_period_sec,
                     'camera_index': camera_index,
+                    'enable_onnx_inference': enable_onnx_inference,
+                    'onnx_model_path': onnx_model_path,
+                    'confidence_threshold': confidence_threshold,
+                    'onnx_input_size': onnx_input_size,
+                    'image_folder_path': image_folder_path,
+                    'image_extensions': image_extensions,
+                    'loop_folder': loop_folder,
+                    'publish_once_per_image': publish_once_per_image,
                 }],
             ),
         ],
@@ -130,7 +204,15 @@ def generate_launch_description():
         image_path_arg,
         publish_period_sec_arg,
         camera_index_arg,
+        enable_onnx_inference_arg,
+        onnx_model_path_arg,
+        confidence_threshold_arg,
+        onnx_input_size_arg,
         summary_period_sec_arg,
+        image_folder_path_arg,
+        image_extensions_arg,
+        loop_folder_arg,
+        publish_once_per_image_arg,
         panda_demo,
         moveit_manipulation_node,
         vision_perception_node,

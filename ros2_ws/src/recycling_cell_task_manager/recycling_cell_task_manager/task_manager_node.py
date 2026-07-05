@@ -24,6 +24,17 @@ CLASS_TO_BIN = {
 }
 DEFAULT_BIN_ID = 'reject_bin'
 
+# Test coordinates chosen to stay well within the Panda arm's reachable
+# workspace (see recycling_cell_moveit_manipulation for the pre/release/
+# retreat z-offsets applied on top of these).
+BIN_POSES = {
+    'plastic_bin': (0.35, 0.20, 0.25),
+    'metal_bin': (0.45, 0.20, 0.25),
+    'paper_bin': (0.55, 0.15, 0.25),
+    'glass_bin': (0.60, 0.10, 0.25),
+    'reject_bin': (0.25, 0.20, 0.25),
+}
+
 STATE_IDLE = 'IDLE'
 STATE_PICKING = 'PICKING'
 STATE_PLACING = 'PLACING'
@@ -132,6 +143,16 @@ class TaskManagerNode(Node):
     def class_to_bin(class_name):
         return CLASS_TO_BIN.get(class_name, DEFAULT_BIN_ID)
 
+    @staticmethod
+    def bin_pose(bin_id):
+        x, y, z = BIN_POSES.get(bin_id, BIN_POSES[DEFAULT_BIN_ID])
+        pose = Pose()
+        pose.position.x = x
+        pose.position.y = y
+        pose.position.z = z
+        pose.orientation.w = 1.0
+        return pose
+
     # ---------- task flow: pick ----------
 
     def start_task(self, target):
@@ -162,6 +183,13 @@ class TaskManagerNode(Node):
         self.send_pick_goal()
 
     def send_pick_goal(self):
+        # If the pick action server hasn't been discovered yet (e.g. right
+        # after bringup, before manipulation node's action server has
+        # finished registering), send_goal_async() would fire a goal request
+        # that never reaches anyone and never resolves. Waiting here blocks
+        # only this callback's worker thread, not the whole executor.
+        self.pick_action_client_.wait_for_server()
+
         goal_msg = PickObject.Goal()
         goal_msg.object_id = self.current_object_id_
         goal_msg.class_name = self.current_class_name_
@@ -238,11 +266,22 @@ class TaskManagerNode(Node):
         self.progress_ = 0.0
         self.publish_robot_state()
 
+        # See send_pick_goal() for why this wait is necessary.
+        self.place_action_client_.wait_for_server()
+
+        place_pose = self.bin_pose(self.current_target_bin_id_)
+        self.get_logger().info(
+            f'Selected target bin pose: '
+            f'bin_id={self.current_target_bin_id_} '
+            f'x={place_pose.position.x:.2f} '
+            f'y={place_pose.position.y:.2f} '
+            f'z={place_pose.position.z:.2f}')
+
         goal_msg = PlaceObject.Goal()
         goal_msg.object_id = self.current_object_id_
         goal_msg.class_name = self.current_class_name_
         goal_msg.target_bin_id = self.current_target_bin_id_
-        goal_msg.place_pose = Pose()
+        goal_msg.place_pose = place_pose
 
         send_goal_future = self.place_action_client_.send_goal_async(
             goal_msg, feedback_callback=self.place_feedback_callback)

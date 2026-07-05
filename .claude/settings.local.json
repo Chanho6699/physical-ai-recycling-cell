@@ -7,7 +7,16 @@
       "Bash(kill -9 89413 89417 89418 89419)",
       "Bash(kill -9 95599 95603)",
       "Bash(kill -INT 96048)",
-      "Bash(kill -9 97627 97631 97632 97633)"
+      "Bash(kill -9 97627 97631 97632 97633)",
+      "Bash(ls /opt/ros/jazzy/include/moveit_ros_planning_interface/moveit/move_group_interface/ 2>&1)",
+      "Read(//opt/ros/jazzy/include/moveit_ros_planning_interface/moveit/move_group_interface/**)",
+      "Bash(apt list *)",
+      "Bash(apt-cache search *)",
+      "Bash(dpkg -s ros-jazzy-joint-trajectory-controller)",
+      "Bash(dpkg -s ros-jazzy-joint-state-broadcaster)",
+      "Bash(kill -INT 9122)",
+      "Bash(kill -9 9731 9727)",
+      "Bash(sudo -n true)"
     ]
   }
 }

@@ -13,8 +13,7 @@ from rclpy.node import Node
 from recycling_cell_msgs.action import PickObject, PlaceObject
 from recycling_cell_msgs.msg import DetectedObjectArray, RobotState, SortResult
 
-CONFIDENCE_THRESHOLD = 0.5
-GRASPABILITY_THRESHOLD = 0.3
+UNKNOWN_SCORE_PENALTY = 0.8
 
 CLASS_TO_BIN = {
     'plastic_bottle': 'plastic_bin',
@@ -48,6 +47,21 @@ class TaskManagerNode(Node):
         self.declare_parameter('max_pick_retries', 2)
         self.declare_parameter('max_place_retries', 1)
         self.declare_parameter('enable_object_memory', True)
+
+        # known objects: low graspability is a soft warning, not a hard
+        # skip -- only absolute_min_graspability rules an object out as
+        # physically too unstable to attempt. graspability_threshold is
+        # just the line below which we warn but still proceed.
+        self.declare_parameter('known_confidence_threshold', 0.50)
+        self.declare_parameter('graspability_threshold', 0.30)
+        self.declare_parameter('absolute_min_graspability', 0.05)
+
+        # unknown objects: separate, generally lower thresholds, since
+        # perception nodes deliberately score "unknown" class detections
+        # lower than known ones (e.g. graspability 0.15-0.25).
+        self.declare_parameter('route_unknown_to_reject_bin', True)
+        self.declare_parameter('min_unknown_confidence', 0.50)
+        self.declare_parameter('min_unknown_graspability', 0.10)
 
         self.callback_group_ = ReentrantCallbackGroup()
 
@@ -87,6 +101,7 @@ class TaskManagerNode(Node):
         self.current_target_bin_id_ = ''
         self.current_target_pose_ = Pose()
         self.current_graspability_score_ = 0.0
+        self.current_is_unknown_ = False
 
         self.pick_retry_count_ = 0
         self.place_retry_count_ = 0
@@ -117,27 +132,80 @@ class TaskManagerNode(Node):
         enable_object_memory = self.get_parameter(
             'enable_object_memory').value
 
-        candidates = []
+        known_candidates = []
+        unknown_candidates = []
+
         for obj in objects:
-            if obj.is_unknown or obj.class_name == 'unknown':
-                continue
-            if obj.confidence < CONFIDENCE_THRESHOLD:
-                continue
-            if obj.graspability_score < GRASPABILITY_THRESHOLD:
-                continue
             if enable_object_memory \
                     and obj.object_id in self.processed_object_ids_:
                 continue
             if obj.object_id in self.failed_object_ids_:
                 continue
-            candidates.append(obj)
 
+            if self.is_unknown_object(obj):
+                scored = self.score_unknown_candidate(obj)
+                if scored is not None:
+                    unknown_candidates.append(scored)
+            else:
+                scored = self.score_known_candidate(obj)
+                if scored is not None:
+                    known_candidates.append(scored)
+
+        # Known objects are an explicit priority tier above unknown ones,
+        # not just a score penalty -- a highly-confident unknown detection
+        # can never outrank an available known object.
+        candidates = known_candidates if known_candidates \
+            else unknown_candidates
         if not candidates:
             return None
 
-        candidates.sort(
-            key=lambda o: o.confidence * o.graspability_score, reverse=True)
-        return candidates[0]
+        candidates.sort(key=lambda pair: pair[0], reverse=True)
+        return candidates[0][1]
+
+    def score_known_candidate(self, obj):
+        known_confidence_threshold = self.get_parameter(
+            'known_confidence_threshold').value
+        graspability_threshold = self.get_parameter(
+            'graspability_threshold').value
+        absolute_min_graspability = self.get_parameter(
+            'absolute_min_graspability').value
+
+        if obj.confidence < known_confidence_threshold:
+            return None
+        if obj.graspability_score < absolute_min_graspability:
+            return None
+
+        if obj.graspability_score < graspability_threshold:
+            self.get_logger().warn(
+                'Known object has low graspability but will still be '
+                f'considered: object_id={obj.object_id} '
+                f'class_name={obj.class_name} '
+                f'graspability_score={obj.graspability_score:.2f}')
+
+        score = obj.confidence * 0.6 + obj.graspability_score * 0.4
+        return (score, obj)
+
+    def score_unknown_candidate(self, obj):
+        if not self.get_parameter('route_unknown_to_reject_bin').value:
+            return None
+
+        min_unknown_confidence = self.get_parameter(
+            'min_unknown_confidence').value
+        min_unknown_graspability = self.get_parameter(
+            'min_unknown_graspability').value
+
+        if obj.confidence < min_unknown_confidence:
+            return None
+        if obj.graspability_score < min_unknown_graspability:
+            return None
+
+        score = (obj.confidence * 0.6 + obj.graspability_score * 0.4) \
+            * UNKNOWN_SCORE_PENALTY
+        return (score, obj)
+
+    @staticmethod
+    def is_unknown_object(obj):
+        return obj.is_unknown or obj.class_name == 'unknown'
 
     @staticmethod
     def class_to_bin(class_name):
@@ -166,7 +234,10 @@ class TaskManagerNode(Node):
         self.current_object_id_ = target.object_id
         self.current_class_name_ = target.class_name
         self.current_confidence_ = target.confidence
-        self.current_target_bin_id_ = self.class_to_bin(target.class_name)
+        self.current_is_unknown_ = self.is_unknown_object(target)
+        self.current_target_bin_id_ = (
+            DEFAULT_BIN_ID if self.current_is_unknown_
+            else self.class_to_bin(target.class_name))
         self.current_target_pose_ = target.pose_base
         self.current_graspability_score_ = target.graspability_score
 
@@ -320,9 +391,14 @@ class TaskManagerNode(Node):
             return
 
         self.get_logger().info('place succeeded, task complete')
+        message = 'sort task completed successfully'
+        if self.current_is_unknown_:
+            message = (
+                'unknown object routed to reject_bin; '
+                'sort task completed successfully')
         self.finish_task(
             pick_success=True, place_success=True,
-            error_code='', message='sort task completed successfully')
+            error_code='', message=message)
 
     def retry_place_or_finish(self, error_code, message):
         max_retries = self.get_parameter('max_place_retries').value

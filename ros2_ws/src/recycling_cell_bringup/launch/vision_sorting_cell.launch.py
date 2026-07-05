@@ -90,6 +90,44 @@ def generate_launch_description():
         description='Advance to the next image every tick instead of dwelling on the current one',
     )
 
+    known_confidence_threshold_arg = DeclareLaunchArgument(
+        'known_confidence_threshold',
+        default_value='0.50',
+        description='Minimum confidence required for a known-class object to be a pick candidate',
+    )
+
+    graspability_threshold_arg = DeclareLaunchArgument(
+        'graspability_threshold',
+        default_value='0.30',
+        description='Below this, a known object still becomes a candidate but logs a low-graspability warning',
+    )
+
+    absolute_min_graspability_arg = DeclareLaunchArgument(
+        'absolute_min_graspability',
+        default_value='0.05',
+        description='Hard floor below which a known object is skipped as physically too unstable to pick',
+    )
+
+    route_unknown_to_reject_bin_arg = DeclareLaunchArgument(
+        'route_unknown_to_reject_bin',
+        default_value='true',
+        description='Route unknown/is_unknown detections to reject_bin instead of skipping them',
+    )
+
+    min_unknown_confidence_arg = DeclareLaunchArgument(
+        'min_unknown_confidence',
+        default_value='0.50',
+        description='Minimum confidence required for an unknown detection to be routed to reject_bin',
+    )
+
+    min_unknown_graspability_arg = DeclareLaunchArgument(
+        'min_unknown_graspability',
+        default_value='0.10',
+        description='Minimum graspability_score required for an unknown detection to be '
+                     'routed to reject_bin (separate from the known-object threshold, since '
+                     'perception nodes deliberately score unknown detections low)',
+    )
+
     image_source = LaunchConfiguration('image_source')
     image_path = LaunchConfiguration('image_path')
     onnx_model_path = LaunchConfiguration('onnx_model_path')
@@ -112,6 +150,18 @@ def generate_launch_description():
         LaunchConfiguration('loop_folder'), value_type=bool)
     publish_once_per_image = ParameterValue(
         LaunchConfiguration('publish_once_per_image'), value_type=bool)
+    known_confidence_threshold = ParameterValue(
+        LaunchConfiguration('known_confidence_threshold'), value_type=float)
+    graspability_threshold = ParameterValue(
+        LaunchConfiguration('graspability_threshold'), value_type=float)
+    absolute_min_graspability = ParameterValue(
+        LaunchConfiguration('absolute_min_graspability'), value_type=float)
+    route_unknown_to_reject_bin = ParameterValue(
+        LaunchConfiguration('route_unknown_to_reject_bin'), value_type=bool)
+    min_unknown_confidence = ParameterValue(
+        LaunchConfiguration('min_unknown_confidence'), value_type=float)
+    min_unknown_graspability = ParameterValue(
+        LaunchConfiguration('min_unknown_graspability'), value_type=float)
 
     panda_demo_launch = os.path.join(
         get_package_share_directory('moveit_resources_panda_moveit_config'),
@@ -179,6 +229,14 @@ def generate_launch_description():
                 executable='task_manager_node',
                 name='task_manager_node',
                 output='screen',
+                parameters=[{
+                    'known_confidence_threshold': known_confidence_threshold,
+                    'graspability_threshold': graspability_threshold,
+                    'absolute_min_graspability': absolute_min_graspability,
+                    'route_unknown_to_reject_bin': route_unknown_to_reject_bin,
+                    'min_unknown_confidence': min_unknown_confidence,
+                    'min_unknown_graspability': min_unknown_graspability,
+                }],
             ),
         ],
     )
@@ -213,6 +271,12 @@ def generate_launch_description():
         image_extensions_arg,
         loop_folder_arg,
         publish_once_per_image_arg,
+        known_confidence_threshold_arg,
+        graspability_threshold_arg,
+        absolute_min_graspability_arg,
+        route_unknown_to_reject_bin_arg,
+        min_unknown_confidence_arg,
+        min_unknown_graspability_arg,
         panda_demo,
         moveit_manipulation_node,
         vision_perception_node,

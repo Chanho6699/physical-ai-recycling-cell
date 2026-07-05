@@ -90,6 +90,31 @@ def generate_launch_description():
         description='Advance to the next image every tick instead of dwelling on the current one',
     )
 
+    folder_advance_mode_arg = DeclareLaunchArgument(
+        'folder_advance_mode',
+        default_value='time',
+        description="How image_folder advances to the next image: 'time' "
+                     "(every publish_period_sec) or 'result' (wait for "
+                     "task_manager's SortResult before advancing)",
+    )
+
+    result_wait_timeout_sec_arg = DeclareLaunchArgument(
+        'result_wait_timeout_sec',
+        default_value='20.0',
+        description='Seconds to wait for a SortResult before giving up and '
+                     'advancing anyway, used when folder_advance_mode=result',
+    )
+
+    folder_result_policy_arg = DeclareLaunchArgument(
+        'folder_result_policy',
+        default_value='single_best_object',
+        description="When folder_advance_mode=result and an image yields "
+                     "multiple detections: 'single_best_object' publishes "
+                     "only the top-scoring one (known objects preferred "
+                     "over unknown), or 'all_objects' publishes all of "
+                     "them (may hit result_wait_timeout_sec for the rest)",
+    )
+
     known_confidence_threshold_arg = DeclareLaunchArgument(
         'known_confidence_threshold',
         default_value='0.50',
@@ -133,6 +158,8 @@ def generate_launch_description():
     onnx_model_path = LaunchConfiguration('onnx_model_path')
     image_folder_path = LaunchConfiguration('image_folder_path')
     image_extensions = LaunchConfiguration('image_extensions')
+    folder_advance_mode = LaunchConfiguration('folder_advance_mode')
+    folder_result_policy = LaunchConfiguration('folder_result_policy')
 
     publish_period_sec = ParameterValue(
         LaunchConfiguration('publish_period_sec'), value_type=float)
@@ -150,6 +177,8 @@ def generate_launch_description():
         LaunchConfiguration('loop_folder'), value_type=bool)
     publish_once_per_image = ParameterValue(
         LaunchConfiguration('publish_once_per_image'), value_type=bool)
+    result_wait_timeout_sec = ParameterValue(
+        LaunchConfiguration('result_wait_timeout_sec'), value_type=float)
     known_confidence_threshold = ParameterValue(
         LaunchConfiguration('known_confidence_threshold'), value_type=float)
     graspability_threshold = ParameterValue(
@@ -216,6 +245,9 @@ def generate_launch_description():
                     'image_extensions': image_extensions,
                     'loop_folder': loop_folder,
                     'publish_once_per_image': publish_once_per_image,
+                    'folder_advance_mode': folder_advance_mode,
+                    'result_wait_timeout_sec': result_wait_timeout_sec,
+                    'folder_result_policy': folder_result_policy,
                 }],
             ),
         ],
@@ -271,6 +303,9 @@ def generate_launch_description():
         image_extensions_arg,
         loop_folder_arg,
         publish_once_per_image_arg,
+        folder_advance_mode_arg,
+        result_wait_timeout_sec_arg,
+        folder_result_policy_arg,
         known_confidence_threshold_arg,
         graspability_threshold_arg,
         absolute_min_graspability_arg,

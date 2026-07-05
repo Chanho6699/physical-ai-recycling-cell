@@ -1,5 +1,6 @@
 import os
 import random
+import time
 
 try:
     import cv2
@@ -27,9 +28,16 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from geometry_msgs.msg import Pose
-from recycling_cell_msgs.msg import DetectedObject, DetectedObjectArray
+from recycling_cell_msgs.msg import (
+    DetectedObject, DetectedObjectArray, SortResult)
 
 VALID_IMAGE_SOURCES = ('synthetic', 'image_file', 'camera', 'image_folder')
+VALID_FOLDER_ADVANCE_MODES = ('time', 'result')
+VALID_FOLDER_RESULT_POLICIES = ('single_best_object', 'all_objects')
+
+# Mirrors task_manager_node's own unknown-object score penalty, so ranking
+# here is consistent with how task_manager would rank the same objects.
+UNKNOWN_SCORE_PENALTY = 0.8
 
 MOCK_CLASSES = ['plastic_bottle', 'can', 'paper_cup', 'glass_bottle']
 
@@ -91,6 +99,9 @@ class VisionPerceptionNode(Node):
         self.declare_parameter('image_extensions', '.jpg,.jpeg,.png')
         self.declare_parameter('loop_folder', False)
         self.declare_parameter('publish_once_per_image', True)
+        self.declare_parameter('folder_advance_mode', 'time')
+        self.declare_parameter('result_wait_timeout_sec', 20.0)
+        self.declare_parameter('folder_result_policy', 'single_best_object')
 
         image_source = self.get_parameter('image_source').value
         if image_source not in VALID_IMAGE_SOURCES:
@@ -100,8 +111,27 @@ class VisionPerceptionNode(Node):
             image_source = 'synthetic'
         self.image_source_ = image_source
 
+        folder_advance_mode = self.get_parameter('folder_advance_mode').value
+        if folder_advance_mode not in VALID_FOLDER_ADVANCE_MODES:
+            self.get_logger().warn(
+                f"Unknown folder_advance_mode '{folder_advance_mode}', "
+                f"falling back to 'time'. Valid options: "
+                f"{VALID_FOLDER_ADVANCE_MODES}")
+
+        folder_result_policy = self.get_parameter(
+            'folder_result_policy').value
+        if folder_result_policy not in VALID_FOLDER_RESULT_POLICIES:
+            self.get_logger().warn(
+                f"Unknown folder_result_policy '{folder_result_policy}', "
+                f"falling back to 'single_best_object'. Valid options: "
+                f"{VALID_FOLDER_RESULT_POLICIES}")
+
         self.publisher_ = self.create_publisher(
             DetectedObjectArray, '/perception/detected_objects', 10)
+
+        self.sort_result_sub_ = self.create_subscription(
+            SortResult, '/task_manager/sort_results',
+            self.sort_result_callback, 10)
 
         self.active_objects_ = []
         self.next_object_index_ = 1
@@ -114,6 +144,14 @@ class VisionPerceptionNode(Node):
         self.image_folder_files_ = []
         self.image_folder_index_ = 0
         self.image_folder_finished_logged_ = False
+
+        # folder_advance_mode="result" state
+        self.waiting_for_result_ = False
+        self.pending_object_ids_ = set()
+        self.current_image_path_ = ''
+        self.result_wait_start_time_ = 0.0
+        self.last_publish_had_objects_ = False
+
         if self.image_source_ == 'image_folder':
             self._load_image_folder()
 
@@ -221,29 +259,7 @@ class VisionPerceptionNode(Node):
             f'image_folder scan found {len(files)} image(s) in '
             f"'{folder_path}'")
 
-    def _tick_image_folder(self):
-        if not self.image_folder_files_:
-            # Already logged in _load_image_folder(); nothing to do.
-            return
-
-        total = len(self.image_folder_files_)
-
-        if self.image_folder_index_ >= total:
-            if self.get_parameter('loop_folder').value:
-                self.image_folder_index_ = 0
-            else:
-                if not self.image_folder_finished_logged_:
-                    self.get_logger().info('Image folder scan completed')
-                    self.image_folder_finished_logged_ = True
-                return
-
-        image_path = self.image_folder_files_[self.image_folder_index_]
-        image_name = os.path.basename(image_path)
-
-        self.get_logger().info(
-            f'Processing image [{self.image_folder_index_ + 1}/{total}]: '
-            f'{image_name}')
-
+    def _detect_objects_in_image(self, image_path):
         frame = None
         if not CV2_AVAILABLE:
             self.get_logger().error(
@@ -266,6 +282,43 @@ class VisionPerceptionNode(Node):
             else:
                 objects = []
 
+        return objects
+
+    def _advance_folder_index(self):
+        self.image_folder_index_ += 1
+        total = len(self.image_folder_files_)
+
+        if self.image_folder_index_ >= total:
+            if self.get_parameter('loop_folder').value:
+                self.image_folder_index_ = 0
+            elif not self.image_folder_finished_logged_:
+                self.get_logger().info('Image folder scan completed')
+                self.image_folder_finished_logged_ = True
+
+    def _tick_image_folder_time_mode(self):
+        if not self.image_folder_files_:
+            # Already logged in _load_image_folder(); nothing to do.
+            return
+
+        total = len(self.image_folder_files_)
+
+        if self.image_folder_index_ >= total:
+            if self.get_parameter('loop_folder').value:
+                self.image_folder_index_ = 0
+            else:
+                if not self.image_folder_finished_logged_:
+                    self.get_logger().info('Image folder scan completed')
+                    self.image_folder_finished_logged_ = True
+                return
+
+        image_path = self.image_folder_files_[self.image_folder_index_]
+        image_name = os.path.basename(image_path)
+
+        self.get_logger().info(
+            f'Processing image [{self.image_folder_index_ + 1}/{total}]: '
+            f'{image_name}')
+
+        objects = self._detect_objects_in_image(image_path)
         self._publish_objects_for_current_image(objects, image_name)
 
         # publish_once_per_image=false intentionally keeps re-processing
@@ -273,6 +326,123 @@ class VisionPerceptionNode(Node):
         # dwelling on one image without switching to image_file mode.
         if self.get_parameter('publish_once_per_image').value:
             self.image_folder_index_ += 1
+
+    def _tick_image_folder_result_mode(self):
+        if not self.image_folder_files_:
+            return
+
+        if self.waiting_for_result_:
+            self._check_result_wait_timeout()
+            return
+
+        total = len(self.image_folder_files_)
+        if self.image_folder_index_ >= total:
+            # Finished (non-looping) and nothing pending -- stay idle.
+            return
+
+        image_path = self.image_folder_files_[self.image_folder_index_]
+        image_name = os.path.basename(image_path)
+        self.current_image_path_ = image_path
+
+        self.get_logger().info(
+            f'Processing image [{self.image_folder_index_ + 1}/{total}]: '
+            f'{image_name}')
+
+        objects = self._detect_objects_in_image(image_path)
+        objects = self._apply_folder_result_policy(objects, image_name)
+        self._publish_objects_for_current_image(objects, image_name)
+
+        if objects:
+            self.last_publish_had_objects_ = True
+            self.pending_object_ids_ = {obj.object_id for obj in objects}
+            self.waiting_for_result_ = True
+            self.result_wait_start_time_ = time.time()
+        else:
+            # Nothing was published for task_manager to act on, so there
+            # is no SortResult to wait for -- move on right away.
+            self.last_publish_had_objects_ = False
+            self._advance_folder_index()
+
+    def _apply_folder_result_policy(self, objects, image_name):
+        if len(objects) <= 1:
+            return objects
+
+        folder_result_policy = self.get_parameter(
+            'folder_result_policy').value
+
+        if folder_result_policy == 'all_objects':
+            self.get_logger().warn(
+                f'folder_result_policy=all_objects with {len(objects)} '
+                f'detections for {image_name}; task_manager only acts on '
+                f'one candidate per message, so extra pending object_ids '
+                f'may run into result_wait_timeout_sec')
+            return objects
+
+        # Default: single_best_object.
+        best = self._select_single_best_object(objects)
+        self.get_logger().info(
+            f'folder_result_policy=single_best_object: selected '
+            f'object_id={best.object_id} class_name={best.class_name} '
+            f'out of {len(objects)} detections for {image_name}')
+        return [best]
+
+    @staticmethod
+    def _select_single_best_object(objects):
+        known_candidates = []
+        unknown_candidates = []
+
+        for obj in objects:
+            is_unknown = obj.is_unknown or obj.class_name == 'unknown'
+            score = obj.confidence * 0.6 + obj.graspability_score * 0.4
+            if is_unknown:
+                unknown_candidates.append(
+                    (score * UNKNOWN_SCORE_PENALTY, obj))
+            else:
+                known_candidates.append((score, obj))
+
+        # Same known-over-unknown priority tier task_manager_node uses, so
+        # the object we forward is the one it would have picked anyway.
+        candidates = known_candidates if known_candidates \
+            else unknown_candidates
+        candidates.sort(key=lambda pair: pair[0], reverse=True)
+        return candidates[0][1]
+
+    def _check_result_wait_timeout(self):
+        result_wait_timeout_sec = self.get_parameter(
+            'result_wait_timeout_sec').value
+        elapsed_sec = time.time() - self.result_wait_start_time_
+        if elapsed_sec < result_wait_timeout_sec:
+            return
+
+        image_name = os.path.basename(self.current_image_path_)
+        self.get_logger().warn(
+            f'Result wait timeout for image {image_name}, '
+            f'pending_object_ids={self.pending_object_ids_}; '
+            f'advancing to next image')
+        self.pending_object_ids_ = set()
+        self.waiting_for_result_ = False
+        self._advance_folder_index()
+
+    def sort_result_callback(self, msg):
+        if not self.waiting_for_result_:
+            return
+        if msg.object_id not in self.pending_object_ids_:
+            return
+
+        self.pending_object_ids_.discard(msg.object_id)
+        self.get_logger().info(
+            f'Received SortResult for pending object_id={msg.object_id} '
+            f'success={msg.overall_success}')
+
+        if self.pending_object_ids_:
+            return
+
+        image_name = os.path.basename(self.current_image_path_)
+        self.get_logger().info(
+            f'All pending objects for image {image_name} completed, '
+            f'advancing to next image')
+        self.waiting_for_result_ = False
+        self._advance_folder_index()
 
     def _publish_objects_for_current_image(self, objects, image_name):
         msg = DetectedObjectArray()
@@ -423,7 +593,10 @@ class VisionPerceptionNode(Node):
             return
 
         if self.image_source_ == 'image_folder':
-            self._tick_image_folder()
+            if self.get_parameter('folder_advance_mode').value == 'result':
+                self._tick_image_folder_result_mode()
+            else:
+                self._tick_image_folder_time_mode()
             return
 
         frame = self._acquire_frame()

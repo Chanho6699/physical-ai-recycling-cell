@@ -15,6 +15,7 @@
   <exec_depend>recycling_cell_manipulation</exec_depend>
   <exec_depend>recycling_cell_task_manager</exec_depend>
   <exec_depend>recycling_cell_moveit_manipulation</exec_depend>
+  <exec_depend>recycling_cell_monitor</exec_depend>
   <exec_depend>moveit_resources_panda_moveit_config</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
 

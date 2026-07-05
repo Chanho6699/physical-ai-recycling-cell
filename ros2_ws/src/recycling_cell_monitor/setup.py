@@ -15,8 +15,8 @@ setup(
     zip_safe=True,
     maintainer='rlack',
     maintainer_email='rlack@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Aggregates SortResult/RobotState into periodic cell throughput metrics',
+    license='Apache-2.0',
     extras_require={
         'test': [
             'pytest',

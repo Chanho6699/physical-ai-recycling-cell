@@ -65,9 +65,24 @@ def generate_launch_description():
         ],
     )
 
+    # Only depends on topics task_manager_node/moveit_manipulation_node
+    # publish, so it can start alongside them without racing anything.
+    monitor_node = TimerAction(
+        period=14.0,
+        actions=[
+            Node(
+                package='recycling_cell_monitor',
+                executable='monitor_node',
+                name='monitor_node',
+                output='screen',
+            ),
+        ],
+    )
+
     return LaunchDescription([
         panda_demo,
         moveit_manipulation_node,
         fake_perception_node,
         task_manager_node,
+        monitor_node,
     ])

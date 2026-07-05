@@ -3,9 +3,9 @@
 <package format="3">
   <name>recycling_cell_monitor</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Aggregates SortResult/RobotState into periodic cell throughput metrics</description>
   <maintainer email="rlack@todo.todo">rlack</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>recycling_cell_msgs</depend>

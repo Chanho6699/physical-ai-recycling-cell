@@ -1,3 +1,4 @@
+import os
 import random
 
 try:
@@ -6,6 +7,20 @@ try:
 except ImportError:
     cv2 = None
     CV2_AVAILABLE = False
+
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    np = None
+    NUMPY_AVAILABLE = False
+
+try:
+    import onnxruntime as ort
+    ONNXRUNTIME_AVAILABLE = True
+except ImportError:
+    ort = None
+    ONNXRUNTIME_AVAILABLE = False
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -23,6 +38,7 @@ CLASS_SIZES = {
     'can': (0.06, 0.06, 0.11),
     'paper_cup': (0.05, 0.05, 0.10),
     'glass_bottle': (0.06, 0.06, 0.20),
+    'unknown': (0.08, 0.08, 0.08),
 }
 
 # Kept within the Panda arm's reachable workspace (same convention as
@@ -31,14 +47,26 @@ MOCK_POSE_X_RANGE = (0.40, 0.55)
 MOCK_POSE_Y_RANGE = (-0.10, 0.10)
 MOCK_POSE_Z = 0.05
 
+# Minimal COCO class-id -> project class-name mapping for the stock
+# Ultralytics COCO-pretrained export. can/glass_bottle have no confident
+# COCO equivalent, so they stay unmapped until a custom-trained model
+# exists; unmapped detections are reported as 'unknown' rather than
+# guessed, since task_manager already knows how to route unknown objects
+# (reject_bin) instead of silently mislabeling something.
+COCO_CLASS_ID_TO_PROJECT_CLASS = {
+    39: 'plastic_bottle',  # COCO 'bottle'
+    41: 'paper_cup',       # COCO 'cup'
+}
+
 
 class VisionPerceptionNode(Node):
-    """v1 skeleton: image input pipeline + DetectedObjectArray publishing.
+    """Image input pipeline + optional ONNX YOLO inference.
 
-    No YOLO/ONNX inference yet. _acquire_frame() is the seam where a real
-    model will run in a later version -- it already reads a frame from the
-    selected source and returns it, but the frame is currently discarded in
-    favor of mock detections.
+    v1 behavior (enable_onnx_inference=false, the default) is untouched:
+    frames are read for pipeline validation only and mock detections are
+    published. v2 adds an ONNX Runtime YOLO path that runs on image_file/
+    camera frames and converts detections to DetectedObjectArray; pose_base
+    is still a simple bbox-to-workspace mapping, not real depth estimation.
     """
 
     def __init__(self):
@@ -47,9 +75,17 @@ class VisionPerceptionNode(Node):
         self.declare_parameter('image_source', 'synthetic')
         self.declare_parameter('image_path', '')
         self.declare_parameter('publish_period_sec', 5.0)
+        self.declare_parameter('camera_index', 0)
         self.declare_parameter('enable_mock_detection', True)
         self.declare_parameter('camera_frame_id', 'camera_link')
         self.declare_parameter('base_frame_id', 'base_link')
+
+        self.declare_parameter('enable_onnx_inference', False)
+        self.declare_parameter('onnx_model_path', '')
+        self.declare_parameter('onnx_input_size', 640)
+        self.declare_parameter('confidence_threshold', 0.50)
+        self.declare_parameter('nms_threshold', 0.45)
+        self.declare_parameter('use_mock_pose_for_onnx', True)
 
         image_source = self.get_parameter('image_source').value
         if image_source not in VALID_IMAGE_SOURCES:
@@ -70,14 +106,21 @@ class VisionPerceptionNode(Node):
         if self.image_source_ == 'camera':
             self._open_camera()
 
+        self.onnx_session_ = None
+        self.onnx_input_name_ = None
+        self.onnx_output_names_ = None
+        if self.get_parameter('enable_onnx_inference').value:
+            self.init_onnx_model()
+
         publish_period_sec = self.get_parameter('publish_period_sec').value
         self.timer_ = self.create_timer(publish_period_sec, self.tick)
 
         self.get_logger().info(
             f"vision_perception_node started (image_source="
-            f"'{self.image_source_}')")
+            f"'{self.image_source_}', enable_onnx_inference="
+            f"{self.get_parameter('enable_onnx_inference').value})")
 
-    # ---------- frame acquisition (no YOLO inference yet) ----------
+    # ---------- frame acquisition ----------
 
     def _open_camera(self):
         if not CV2_AVAILABLE:
@@ -86,13 +129,16 @@ class VisionPerceptionNode(Node):
                 'installed. Camera frames will not be read.')
             return
 
-        self.camera_ = cv2.VideoCapture(0)
+        camera_index = self.get_parameter('camera_index').value
+        self.camera_ = cv2.VideoCapture(camera_index)
         if not self.camera_.isOpened():
             self.get_logger().error(
-                'Failed to open camera device 0 (cv2.VideoCapture(0))')
+                f'Failed to open camera device {camera_index} '
+                f'(cv2.VideoCapture({camera_index}))')
             self.camera_ = None
         else:
-            self.get_logger().info('Camera device 0 opened successfully')
+            self.get_logger().info(
+                f'Camera device {camera_index} opened successfully')
 
     def _acquire_frame(self):
         if self.image_source_ == 'synthetic':
@@ -132,20 +178,220 @@ class VisionPerceptionNode(Node):
 
         return None
 
+    # ---------- ONNX model setup ----------
+
+    def init_onnx_model(self):
+        if not ONNXRUNTIME_AVAILABLE:
+            self.get_logger().error(
+                'enable_onnx_inference=true requires onnxruntime, which is '
+                'not installed (pip install onnxruntime). Falling back to '
+                'mock detections.')
+            return
+
+        if not NUMPY_AVAILABLE:
+            self.get_logger().error(
+                'enable_onnx_inference=true requires numpy, which is not '
+                'installed. Falling back to mock detections.')
+            return
+
+        onnx_model_path = self.get_parameter('onnx_model_path').value
+        if not onnx_model_path:
+            self.get_logger().error(
+                'enable_onnx_inference=true but onnx_model_path is empty. '
+                'Falling back to mock detections.')
+            return
+
+        if not os.path.isfile(onnx_model_path):
+            self.get_logger().error(
+                f"onnx_model_path='{onnx_model_path}' does not exist. "
+                'Falling back to mock detections.')
+            return
+
+        try:
+            self.onnx_session_ = ort.InferenceSession(
+                onnx_model_path, providers=['CPUExecutionProvider'])
+        except Exception as exc:
+            self.get_logger().error(
+                f"Failed to load ONNX model from '{onnx_model_path}': {exc}")
+            self.onnx_session_ = None
+            return
+
+        input_info = self.onnx_session_.get_inputs()[0]
+        self.onnx_input_name_ = input_info.name
+        self.onnx_output_names_ = [
+            output.name for output in self.onnx_session_.get_outputs()]
+
+        self.get_logger().info(
+            f"ONNX model loaded from '{onnx_model_path}': "
+            f'input_name={self.onnx_input_name_} '
+            f'input_shape={input_info.shape} '
+            f'output_names={self.onnx_output_names_}')
+
+    # ---------- ONNX preprocess / inference / postprocess ----------
+
+    def preprocess_yolo(self, frame):
+        input_size = self.get_parameter('onnx_input_size').value
+
+        resized = cv2.resize(frame, (input_size, input_size))
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        normalized = rgb.astype(np.float32) / 255.0
+        chw = np.transpose(normalized, (2, 0, 1))
+        batched = np.expand_dims(chw, axis=0)
+        return np.ascontiguousarray(batched, dtype=np.float32)
+
+    def run_onnx_inference(self, frame):
+        input_tensor = self.preprocess_yolo(frame)
+        outputs = self.onnx_session_.run(
+            self.onnx_output_names_, {self.onnx_input_name_: input_tensor})
+
+        self.get_logger().info(
+            f'ONNX raw output shapes: {[out.shape for out in outputs]}')
+        return outputs
+
+    def postprocess_yolo(self, outputs, original_shape):
+        """Decode Ultralytics-style post-NMS ONNX export output.
+
+        Expects outputs[0] shaped (1, N, 6) with rows of
+        [x1, y1, x2, y2, confidence, class_id] in onnx_input_size pixel
+        space. Raw pre-NMS prediction tensors (e.g. (1, 84, 8400)) are not
+        decoded here -- that needs its own NMS step and is left for a
+        follow-up version. Returns None to signal "fall back to mock",
+        or a (possibly empty) list of detections on success.
+        """
+        output = outputs[0]
+
+        if NUMPY_AVAILABLE and output.ndim == 3 and output.shape[-1] == 6:
+            confidence_threshold = self.get_parameter(
+                'confidence_threshold').value
+            input_size = self.get_parameter('onnx_input_size').value
+            orig_h, orig_w = original_shape[0], original_shape[1]
+            scale_x = orig_w / input_size
+            scale_y = orig_h / input_size
+
+            detections = []
+            for x1, y1, x2, y2, confidence, class_id in output[0]:
+                if confidence < confidence_threshold:
+                    continue
+                detections.append({
+                    'bbox': (
+                        float(x1) * scale_x, float(y1) * scale_y,
+                        float(x2) * scale_x, float(y2) * scale_y),
+                    'confidence': float(confidence),
+                    'class_id': int(class_id),
+                })
+            return detections
+
+        self.get_logger().warn(
+            f'Unsupported ONNX output shape {output.shape}; expected a '
+            f'post-NMS Ultralytics export shaped (1, N, 6). Raw pre-NMS '
+            f'prediction tensors are not decoded in this version -- '
+            f'falling back to mock detections.')
+        return None
+
+    # ---------- class mapping / pose mapping ----------
+
+    @staticmethod
+    def map_class_id_to_class_name(class_id):
+        return COCO_CLASS_ID_TO_PROJECT_CLASS.get(class_id, 'unknown')
+
+    @staticmethod
+    def bbox_to_mock_pose(bbox, original_shape):
+        # No depth estimation yet: map the bbox center's position within
+        # the image onto the Panda arm's reachable workspace rectangle.
+        x1, y1, x2, y2 = bbox
+        orig_h, orig_w = original_shape[0], original_shape[1]
+
+        norm_x = ((x1 + x2) / 2.0) / orig_w if orig_w > 0 else 0.5
+        norm_y = ((y1 + y2) / 2.0) / orig_h if orig_h > 0 else 0.5
+
+        x = MOCK_POSE_X_RANGE[0] + norm_x * (
+            MOCK_POSE_X_RANGE[1] - MOCK_POSE_X_RANGE[0])
+        y = MOCK_POSE_Y_RANGE[0] + norm_y * (
+            MOCK_POSE_Y_RANGE[1] - MOCK_POSE_Y_RANGE[0])
+        return (x, y, MOCK_POSE_Z)
+
     # ---------- main loop ----------
 
     def tick(self):
         if not rclpy.ok():
             return
 
-        # `frame` is where a future YOLO/ONNX model would run inference.
-        # For v1 it is only read (to exercise/validate the input pipeline
-        # and its logging) and then discarded in favor of mock detections.
-        self._acquire_frame()
+        frame = self._acquire_frame()
+
+        if self.get_parameter('enable_onnx_inference').value \
+                and self.image_source_ in ('image_file', 'camera') \
+                and frame is not None:
+            new_objects = self._run_onnx_pipeline(frame)
+            if new_objects is not None:
+                self.active_objects_.extend(new_objects)
+                self._publish_active_objects()
+                return
 
         if self.get_parameter('enable_mock_detection').value:
             self._spawn_mock_object()
             self._publish_active_objects()
+
+    def _run_onnx_pipeline(self, frame):
+        if self.onnx_session_ is None:
+            self.get_logger().error(
+                'enable_onnx_inference=true but no ONNX session is '
+                'loaded; falling back to mock detection for this tick')
+            return None
+
+        outputs = self.run_onnx_inference(frame)
+        detections = self.postprocess_yolo(outputs, frame.shape)
+
+        if detections is None:
+            return None
+
+        if not detections:
+            self.get_logger().info('No ONNX detections above threshold')
+            return []
+
+        use_mock_pose = self.get_parameter('use_mock_pose_for_onnx').value
+        objects = []
+        for detection in detections:
+            class_name = self.map_class_id_to_class_name(
+                detection['class_id'])
+
+            if use_mock_pose:
+                position = self.bbox_to_mock_pose(
+                    detection['bbox'], frame.shape)
+            else:
+                position = (
+                    random.uniform(*MOCK_POSE_X_RANGE),
+                    random.uniform(*MOCK_POSE_Y_RANGE),
+                    MOCK_POSE_Z,
+                )
+
+            is_unknown = class_name == 'unknown'
+            graspability_score = (
+                random.uniform(0.15, 0.25) if is_unknown
+                else min(0.95, detection['confidence'] + 0.05))
+
+            object_id = f'vision_obj_{self.next_object_index_}'
+            self.next_object_index_ += 1
+
+            obj = self._make_object(
+                object_id=object_id,
+                class_name=class_name,
+                confidence=detection['confidence'],
+                position=position,
+                size=CLASS_SIZES[class_name],
+                graspability_score=graspability_score,
+                is_unknown=is_unknown,
+            )
+            objects.append(obj)
+
+            self.get_logger().info(
+                f'ONNX detection: object_id={object_id} '
+                f'class_name={class_name} '
+                f"confidence={detection['confidence']:.2f} "
+                f"bbox={tuple(round(v, 1) for v in detection['bbox'])}")
+
+        return objects
+
+    # ---------- mock detection (v1, unchanged) ----------
 
     def _spawn_mock_object(self):
         object_id = f'vision_obj_{self.next_object_index_}'

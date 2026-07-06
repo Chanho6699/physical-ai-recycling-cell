@@ -31,6 +31,8 @@ from geometry_msgs.msg import Pose
 from recycling_cell_msgs.msg import (
     DetectedObject, DetectedObjectArray, SortResult)
 
+from recycling_cell_vision import perception_policy
+
 VALID_IMAGE_SOURCES = ('synthetic', 'image_file', 'camera', 'image_folder')
 VALID_FOLDER_ADVANCE_MODES = ('time', 'result')
 VALID_FOLDER_RESULT_POLICIES = ('single_best_object', 'all_objects')
@@ -117,6 +119,12 @@ class VisionPerceptionNode(Node):
         self.declare_parameter('vision_perf_log_period', 1)
         self.declare_parameter('publish_vision_metrics', False)
         self.declare_parameter('recent_perf_window', 20)
+
+        self.declare_parameter('enable_perception_policy', True)
+        self.declare_parameter('policy_confidence_threshold', 0.5)
+        self.declare_parameter('policy_low_confidence_threshold', 0.35)
+        self.declare_parameter('policy_ambiguity_margin', 0.15)
+        self.declare_parameter('policy_max_detections_for_auto_sort', 3)
 
         image_source = self.get_parameter('image_source').value
         if image_source not in VALID_IMAGE_SOURCES:
@@ -319,6 +327,52 @@ class VisionPerceptionNode(Node):
         except ValueError:
             return os.path.basename(image_path)
 
+    def _apply_perception_policy(self, image_name, objects):
+        """Log a policy decision for this image's detections.
+
+        Runs regardless of benchmark_mode/publish_detections_in_vision_only
+        -- it never changes what gets published, it's purely an additional
+        [PerceptionPolicy] log line describing what a downstream task
+        manager *should* do with this image's detections (sort/reject/
+        skip/retry/manual review), separate from what actually gets
+        published today.
+        """
+        if not self.get_parameter('enable_perception_policy').value:
+            return
+
+        detections = [
+            {
+                'class_name': obj.class_name,
+                'confidence': obj.confidence,
+                'object_id': obj.object_id,
+            }
+            for obj in objects
+        ]
+
+        result = perception_policy.evaluate_detections(
+            detections,
+            confidence_threshold=self.get_parameter(
+                'policy_confidence_threshold').value,
+            low_confidence_threshold=self.get_parameter(
+                'policy_low_confidence_threshold').value,
+            ambiguity_margin=self.get_parameter(
+                'policy_ambiguity_margin').value,
+            max_detections_for_auto_sort=self.get_parameter(
+                'policy_max_detections_for_auto_sort').value,
+        )
+
+        selected_class = result['selected_class'] or 'none'
+        selected_confidence = (
+            f"{result['selected_confidence']:.2f}"
+            if result['selected_confidence'] is not None else 'none')
+
+        self.get_logger().info(
+            f'[PerceptionPolicy] image={image_name} '
+            f"decision={result['decision']} reason={result['reason']} "
+            f'selected_class={selected_class} conf={selected_confidence} '
+            f"num_detections={result['num_detections']} "
+            f"recommended_action={result['recommended_action']}")
+
     def _detect_objects_in_image(self, image_path):
         image_name = self._relative_image_name(image_path)
         self._reset_perf_timers()
@@ -350,6 +404,7 @@ class VisionPerceptionNode(Node):
                 objects = []
             self._last_provider_ = 'mock'
 
+        self._apply_perception_policy(image_name, objects)
         self._log_vision_perf(image_name, len(objects))
         return objects
 

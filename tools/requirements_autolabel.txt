@@ -1,0 +1,22 @@
+# Dependencies for tools/autolabel_recycling_groundingdino.py
+#
+# These pull in their own torch/transformers/huggingface_hub versions
+# that may conflict with the ROS2/ament Python environment used
+# elsewhere in this project. Install in an isolated virtualenv instead
+# of the system/ROS2 Python:
+#
+#   python3 -m venv .venv-autolabel
+#   source .venv-autolabel/bin/activate
+#   pip install --upgrade pip
+#   pip install -r tools/requirements_autolabel.txt
+#
+# GroundingDINO's first run downloads its checkpoint (~660MB) and config
+# from GitHub/HuggingFace, so the first invocation of
+# autolabel_recycling_groundingdino.py needs network access.
+
+autodistill
+autodistill-grounding-dino
+supervision
+opencv-python
+Pillow
+numpy

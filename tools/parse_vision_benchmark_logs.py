@@ -5,9 +5,18 @@ summary.
 Reads logs/vision_benchmark/yolo11n_<size>.log (produced by
 tools/run_vision_size_benchmark.sh) for each requested input size and
 extracts, per size:
+  - benchmark_mode ('end_to_end' or 'vision_only', from the node's startup
+    log line; defaults to 'end_to_end' for older logs that predate this
+    field) -- vision_only logs have no task_manager/MoveIt in the loop, so
+    there is no overall_success to report and that is reflected as such
+    rather than as a failure
+  - the scanned image_folder_path and whether it was scanned recursively
+    (from vision_perception_node's "image_folder scan found N image(s) in
+    '<path>'" line)
   - per-image ONNX detections (class_name, confidence)
   - per-image [VisionPerf] timing (acquire/preprocess/inference/postprocess/
-    total/fps)
+    total/fps) -- image names may include a subfolder prefix (e.g.
+    "paper_cup/paper_cup_dark_001.jpg") when recursive_image_folder=true
   - the final [VisionPerf][avg over last N] rolling average
   - Published detection counts per image
   - task_manager overall_success outcomes
@@ -63,10 +72,21 @@ OVERALL_SUCCESS_RE = re.compile(
     r'finished: overall_success=(?P<success>True|False)'
 )
 
+IMAGE_FOLDER_SCAN_RE = re.compile(
+    r"image_folder scan found (?P<count>\d+) image\(s\) in "
+    r"'(?P<folder_path>[^']+)'(?P<recursive> \(recursive\))?"
+)
+
+BENCHMARK_MODE_RE = re.compile(r"benchmark_mode='(?P<benchmark_mode>\w+)'")
+
 SCAN_COMPLETED_TEXT = 'Image folder scan completed'
 
 CSV_FIELDNAMES = [
     'input_size',
+    'benchmark_mode',
+    'dataset',
+    'image_folder_path',
+    'recursive_image_folder',
     'avg_total_ms',
     'avg_inference_ms',
     'avg_fps',
@@ -92,9 +112,23 @@ def parse_log(log_path):
     scan_completed = False
     input_size = None
     provider = None
+    folder_path = None
+    recursive = False
+    benchmark_mode = 'end_to_end'
 
     with open(log_path, 'r', errors='replace') as log_file:
         for line in log_file:
+            match = BENCHMARK_MODE_RE.search(line)
+            if match:
+                benchmark_mode = match.group('benchmark_mode')
+                continue
+
+            match = IMAGE_FOLDER_SCAN_RE.search(line)
+            if match:
+                folder_path = match.group('folder_path')
+                recursive = match.group('recursive') is not None
+                continue
+
             match = ONNX_DETECTION_RE.search(line)
             if match:
                 pending_detections.append(
@@ -149,6 +183,9 @@ def parse_log(log_path):
     return {
         'input_size': input_size,
         'provider': provider,
+        'benchmark_mode': benchmark_mode,
+        'folder_path': folder_path,
+        'recursive': recursive,
         'images': images,
         'detections_by_image': detections_by_image,
         'published_by_image': published_by_image,
@@ -179,8 +216,23 @@ def format_published_counts(summary):
 def build_row(summary):
     final_avg = summary['final_avg'] or {}
     success_flags = summary['success_flags']
+    folder_path = summary['folder_path'] or ''
+    benchmark_mode = summary['benchmark_mode']
+
+    # vision_only never runs task_manager, so there's no overall_success to
+    # report -- record that as "not applicable", not as a failed 0/0.
+    if benchmark_mode == 'vision_only' and not success_flags:
+        all_success = 'n/a (vision_only)'
+    else:
+        all_success = bool(success_flags) and all(success_flags)
+
     return {
         'input_size': summary['input_size'],
+        'benchmark_mode': benchmark_mode,
+        'dataset': os.path.basename(folder_path.rstrip('/')) if folder_path
+        else '',
+        'image_folder_path': folder_path,
+        'recursive_image_folder': summary['recursive'],
         'avg_total_ms': final_avg.get('avg_total_ms', ''),
         'avg_inference_ms': final_avg.get('avg_inference_ms', ''),
         'avg_fps': final_avg.get('avg_fps', ''),
@@ -189,7 +241,7 @@ def build_row(summary):
         'published_counts': format_published_counts(summary),
         'success_count': sum(1 for ok in success_flags if ok),
         'success_total': len(success_flags),
-        'all_success': bool(success_flags) and all(success_flags),
+        'all_success': all_success,
         'scan_completed': summary['scan_completed'],
     }
 
@@ -203,7 +255,7 @@ def write_csv(rows, csv_path):
             writer.writerow(row)
 
 
-def write_markdown(rows, summaries, md_path):
+def write_markdown(rows, summaries, md_path, log_dir, csv_path):
     rows_by_size = {row['input_size']: row for row in rows}
     providers = {
         s['provider'] for s in summaries.values() if s['provider']
@@ -212,6 +264,20 @@ def write_markdown(rows, summaries, md_path):
     all_images = sorted({
         image for s in summaries.values() for image in s['images']
     })
+    image_count = len(all_images)
+    small_sample = image_count <= 10
+
+    dataset_name = next(
+        (row['dataset'] for row in rows if row['dataset']), 'test_images')
+    folder_path = next(
+        (row['image_folder_path'] for row in rows
+         if row['image_folder_path']), 'n/a')
+    recursive = any(row['recursive_image_folder'] for row in rows)
+
+    benchmark_modes_present = {row['benchmark_mode'] for row in rows}
+    any_vision_only = 'vision_only' in benchmark_modes_present
+    any_end_to_end = 'end_to_end' in benchmark_modes_present
+    mixed_modes = any_vision_only and any_end_to_end
 
     lines = []
     lines.append('# Vision ONNX input_size Benchmark Summary')
@@ -236,34 +302,82 @@ def write_markdown(rows, summaries, md_path):
                   f'`tools/export_yolo_onnx_sizes.py` (nms=True, static '
                   f'input shape)')
     lines.append(f'- ONNX Runtime provider: {provider_str}')
-    lines.append(
-        '- Pipeline: recycling_cell_vision (image_folder + '
-        'folder_advance_mode=result + folder_result_policy=single_best_'
-        'object) -> recycling_cell_task_manager -> '
-        'recycling_cell_moveit_manipulation (MoveIt2, Panda arm, RViz '
-        'simulation) -> recycling_cell_monitor')
-    lines.append(f'- Test images ({len(all_images)}): '
-                  f'{", ".join(all_images) if all_images else "n/a"}')
+    if any_vision_only and not any_end_to_end:
+        lines.append(
+            '- Pipeline: recycling_cell_vision only '
+            '(benchmark_mode=vision_only) -- ONNX inference + [VisionPerf] '
+            'logging on a fast per-image loop; task_manager/MoveIt were '
+            'not launched for this run, so no pick/place cycle time gates '
+            'the scan')
+    elif any_end_to_end and not any_vision_only:
+        lines.append(
+            '- Pipeline: recycling_cell_vision (image_folder + '
+            'folder_advance_mode=result + folder_result_policy=single_'
+            'best_object) -> recycling_cell_task_manager -> '
+            'recycling_cell_moveit_manipulation (MoveIt2, Panda arm, RViz '
+            'simulation) -> recycling_cell_monitor')
+    else:
+        lines.append(
+            '- Pipeline: mixed across sizes -- some ran benchmark_mode='
+            'end_to_end (full task_manager/MoveIt pipeline) and others ran '
+            'benchmark_mode=vision_only (vision node only, no robot); see '
+            'the benchmark_mode column in the Result Table/CSV per size')
+    lines.append(f'- Dataset: {dataset_name} (image_folder_path='
+                 f'`{folder_path}`, recursive_image_folder={recursive})')
+    lines.append(f'- Log directory: `{log_dir}`')
+    if small_sample:
+        lines.append(f'- Test images ({image_count}): '
+                      f'{", ".join(all_images) if all_images else "n/a"}')
+    else:
+        lines.append(f'- Test images: {image_count} files across the '
+                      f'dataset folder (full per-image list in the CSV, '
+                      f'omitted here for readability)')
     lines.append(
         '- Run via `tools/run_vision_size_benchmark.sh`, one launch per '
-        'input_size against the same `test_images/` folder')
+        'input_size against the same image folder')
     lines.append('')
+
+    def format_success(row):
+        if row['benchmark_mode'] == 'vision_only' \
+                and row['success_total'] == 0:
+            return 'n/a (vision_only)'
+        return f'{row["success_count"]}/{row["success_total"]}'
 
     lines.append('## Result Table')
     lines.append('')
-    lines.append(
-        '| input_size | avg_total_ms | avg_inference_ms | avg_fps | '
-        'success | scan_completed | detections |')
-    lines.append(
-        '|---|---|---|---|---|---|---|')
-    for size in sorted(rows_by_size, reverse=True):
-        row = rows_by_size[size]
-        success_str = f'{row["success_count"]}/{row["success_total"]}'
+    if small_sample:
         lines.append(
-            f'| {row["input_size"]} | {row["avg_total_ms"]} | '
-            f'{row["avg_inference_ms"]} | {row["avg_fps"]} | '
-            f'{success_str} | {row["scan_completed"]} | '
-            f'{row["detections_summary"]} |')
+            '| input_size | mode | avg_total_ms | avg_inference_ms | '
+            'avg_fps | success | scan_completed | detections |')
+        lines.append('|---|---|---|---|---|---|---|---|')
+        for size in sorted(rows_by_size, reverse=True):
+            row = rows_by_size[size]
+            lines.append(
+                f'| {row["input_size"]} | {row["benchmark_mode"]} | '
+                f'{row["avg_total_ms"]} | {row["avg_inference_ms"]} | '
+                f'{row["avg_fps"]} | {format_success(row)} | '
+                f'{row["scan_completed"]} | {row["detections_summary"]} |')
+    else:
+        lines.append(
+            '| input_size | mode | avg_total_ms | avg_inference_ms | '
+            'avg_fps | success | scan_completed | images_processed |')
+        lines.append('|---|---|---|---|---|---|---|---|')
+        for size in sorted(rows_by_size, reverse=True):
+            row = rows_by_size[size]
+            processed_count = len(
+                summaries[size]['images']) if size in summaries else 0
+            lines.append(
+                f'| {row["input_size"]} | {row["benchmark_mode"]} | '
+                f'{row["avg_total_ms"]} | {row["avg_inference_ms"]} | '
+                f'{row["avg_fps"]} | {format_success(row)} | '
+                f'{row["scan_completed"]} | {processed_count} |')
+        lines.append('')
+        lines.append(
+            'Per-image class/confidence detail is in '
+            f'`{csv_path}` '
+            '(`detections_summary`/`published_counts` columns) -- omitted '
+            'from this table because the dataset is too large to render '
+            'readably here.')
     lines.append('')
 
     lines.append('## Interpretation')
@@ -273,27 +387,54 @@ def write_markdown(rows, summaries, md_path):
         'decreased and FPS increased, as expected: smaller inputs mean '
         'less compute per forward pass on the same CPUExecutionProvider.'
     )
+    image_list_str = (
+        f' ({", ".join(all_images)})' if small_sample and all_images else '')
+    if any_vision_only and not any_end_to_end:
+        lines.append(
+            f'- On the {image_count} available test image'
+            f'{"s" if image_count != 1 else ""}{image_list_str}, '
+            f'detection confidence stayed high and every image completed '
+            f'("Image folder scan completed") across all three input '
+            f'sizes. This run used benchmark_mode=vision_only, so '
+            f'task_manager/MoveIt were never exercised and there is no '
+            f'overall_success/sorting-pipeline outcome to report here -- '
+            f'only ONNX detection quality and throughput.'
+        )
+    elif mixed_modes:
+        lines.append(
+            f'- On the {image_count} available test image'
+            f'{"s" if image_count != 1 else ""}{image_list_str}, '
+            f'detection confidence held up across all three input sizes. '
+            f'Sizes run with benchmark_mode=end_to_end additionally '
+            f'confirmed sorting pipeline success (overall_success=True); '
+            f'sizes run with benchmark_mode=vision_only have no such '
+            f'outcome to report since task_manager/MoveIt were skipped.'
+        )
+    else:
+        lines.append(
+            f'- On the {image_count} available test image'
+            f'{"s" if image_count != 1 else ""}{image_list_str}, detection '
+            f'confidence and sorting pipeline success (overall_success='
+            f'True, "Image folder scan completed") were maintained across '
+            f'all three input sizes.'
+        )
     lines.append(
-        '- On the 2 available test images (cup.jpg, test.jpg), detection '
-        'confidence and sorting pipeline success (overall_success=True, '
-        '"Image folder scan completed") were maintained across all three '
-        'input sizes.'
-    )
-    lines.append(
-        '- However, with only 2 test images, this is not enough data to '
-        'generalize whether accuracy degrades at smaller input sizes. '
-        'Further validation with a larger, more varied set of real '
-        'photographed recyclable-object images is needed before picking '
-        'a production input_size based on speed alone.'
+        f'- However, with only {image_count} test image'
+        f'{"s" if image_count != 1 else ""} from the "{dataset_name}" '
+        f'dataset, this is not enough data to generalize whether accuracy '
+        f'degrades at smaller input sizes. Further validation with a '
+        f'larger, more varied set of real photographed recyclable-object '
+        f'images is needed before picking a production input_size based '
+        f'on speed alone.'
     )
     lines.append('')
 
     lines.append('## Limitations')
     lines.append('')
     lines.append(
-        '- Only 2 test images (1 known class + 1 unknown), both already '
-        'well-detected at 640; too small a sample to measure a real '
-        'precision/recall drop at smaller sizes.')
+        f'- Only {image_count} test image{"s" if image_count != 1 else ""} '
+        f'from the "{dataset_name}" dataset; too small a sample to measure '
+        f'a real precision/recall drop at smaller sizes.')
     lines.append(
         '- CPUExecutionProvider only -- no GPU/TensorRT/FP16/INT8 '
         'comparison yet, so these numbers are a CPU baseline, not a '
@@ -305,6 +446,14 @@ def write_markdown(rows, summaries, md_path):
     lines.append(
         '- Each size was run once; no repeated trials to quantify '
         'run-to-run latency variance.')
+    if any_vision_only:
+        lines.append(
+            '- benchmark_mode=vision_only sizes measure ONNX throughput/'
+            'detection quality only -- they do not exercise task_manager '
+            'routing, MoveIt planning, or gripper execution, so a full '
+            'sorting-pipeline validation (including any of these sizes) '
+            'still needs a separate benchmark_mode=end_to_end run on a '
+            'representative subset.')
     lines.append('')
 
     lines.append('## Next Steps')
@@ -324,6 +473,12 @@ def write_markdown(rows, summaries, md_path):
         '- Once the log format is trusted, consider having '
         'run_vision_size_benchmark.sh call this parser automatically at '
         'the end of each sweep.')
+    if any_vision_only:
+        lines.append(
+            '- Run benchmark_mode=end_to_end (task_manager + MoveIt) on a '
+            'small representative subset of this dataset to validate the '
+            'full sorting pipeline, since the vision_only sizes above only '
+            'cover detection throughput/quality.')
     lines.append('')
 
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
@@ -368,7 +523,8 @@ def main():
     write_csv(rows, args.output_csv)
     print(f'Wrote {args.output_csv}')
 
-    write_markdown(rows, summaries, args.output_md)
+    write_markdown(
+        rows, summaries, args.output_md, args.log_dir, args.output_csv)
     print(f'Wrote {args.output_md}')
 
 

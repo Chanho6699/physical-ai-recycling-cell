@@ -34,6 +34,13 @@ from recycling_cell_msgs.msg import (
 VALID_IMAGE_SOURCES = ('synthetic', 'image_file', 'camera', 'image_folder')
 VALID_FOLDER_ADVANCE_MODES = ('time', 'result')
 VALID_FOLDER_RESULT_POLICIES = ('single_best_object', 'all_objects')
+VALID_BENCHMARK_MODES = ('end_to_end', 'vision_only')
+
+# benchmark_mode=vision_only doesn't wait on task_manager/MoveIt at all, so
+# ticks are driven as fast as the executor can dispatch them rather than at
+# publish_period_sec's pace -- throughput is then bounded only by actual
+# acquire+inference time, which is what we want to measure.
+VISION_ONLY_TICK_PERIOD_SEC = 0.001
 
 # Mirrors task_manager_node's own unknown-object score penalty, so ranking
 # here is consistent with how task_manager would rank the same objects.
@@ -97,11 +104,19 @@ class VisionPerceptionNode(Node):
 
         self.declare_parameter('image_folder_path', '')
         self.declare_parameter('image_extensions', '.jpg,.jpeg,.png')
+        self.declare_parameter('recursive_image_folder', False)
         self.declare_parameter('loop_folder', False)
         self.declare_parameter('publish_once_per_image', True)
         self.declare_parameter('folder_advance_mode', 'time')
         self.declare_parameter('result_wait_timeout_sec', 20.0)
         self.declare_parameter('folder_result_policy', 'single_best_object')
+        self.declare_parameter('benchmark_mode', 'end_to_end')
+        self.declare_parameter('publish_detections_in_vision_only', False)
+
+        self.declare_parameter('enable_vision_perf_logging', True)
+        self.declare_parameter('vision_perf_log_period', 1)
+        self.declare_parameter('publish_vision_metrics', False)
+        self.declare_parameter('recent_perf_window', 20)
 
         image_source = self.get_parameter('image_source').value
         if image_source not in VALID_IMAGE_SOURCES:
@@ -126,6 +141,14 @@ class VisionPerceptionNode(Node):
                 f"falling back to 'single_best_object'. Valid options: "
                 f"{VALID_FOLDER_RESULT_POLICIES}")
 
+        benchmark_mode = self.get_parameter('benchmark_mode').value
+        if benchmark_mode not in VALID_BENCHMARK_MODES:
+            self.get_logger().warn(
+                f"Unknown benchmark_mode '{benchmark_mode}', falling back "
+                f"to 'end_to_end'. Valid options: {VALID_BENCHMARK_MODES}")
+            benchmark_mode = 'end_to_end'
+        self.benchmark_mode_ = benchmark_mode
+
         self.publisher_ = self.create_publisher(
             DetectedObjectArray, '/perception/detected_objects', 10)
 
@@ -142,6 +165,7 @@ class VisionPerceptionNode(Node):
             self._open_camera()
 
         self.image_folder_files_ = []
+        self.image_folder_root_ = ''
         self.image_folder_index_ = 0
         self.image_folder_finished_logged_ = False
 
@@ -152,6 +176,15 @@ class VisionPerceptionNode(Node):
         self.result_wait_start_time_ = 0.0
         self.last_publish_had_objects_ = False
 
+        # perf instrumentation state
+        self.recent_perf_samples_ = []
+        self.perf_log_counter_ = 0
+        self._last_acquire_ms_ = 0.0
+        self._last_preprocess_ms_ = 0.0
+        self._last_inference_ms_ = 0.0
+        self._last_postprocess_ms_ = 0.0
+        self._last_provider_ = 'none'
+
         if self.image_source_ == 'image_folder':
             self._load_image_folder()
 
@@ -161,12 +194,17 @@ class VisionPerceptionNode(Node):
         if self.get_parameter('enable_onnx_inference').value:
             self.init_onnx_model()
 
-        publish_period_sec = self.get_parameter('publish_period_sec').value
-        self.timer_ = self.create_timer(publish_period_sec, self.tick)
+        if self.image_source_ == 'image_folder' \
+                and self.benchmark_mode_ == 'vision_only':
+            timer_period = VISION_ONLY_TICK_PERIOD_SEC
+        else:
+            timer_period = self.get_parameter('publish_period_sec').value
+        self.timer_ = self.create_timer(timer_period, self.tick)
 
         self.get_logger().info(
             f"vision_perception_node started (image_source="
-            f"'{self.image_source_}', enable_onnx_inference="
+            f"'{self.image_source_}', benchmark_mode="
+            f"'{self.benchmark_mode_}', enable_onnx_inference="
             f"{self.get_parameter('enable_onnx_inference').value})")
 
     # ---------- frame acquisition ----------
@@ -235,6 +273,7 @@ class VisionPerceptionNode(Node):
             ext.strip().lower() for ext in
             self.get_parameter('image_extensions').value.split(',')
             if ext.strip())
+        recursive = self.get_parameter('recursive_image_folder').value
 
         if not folder_path or not os.path.isdir(folder_path):
             self.get_logger().error(
@@ -242,24 +281,49 @@ class VisionPerceptionNode(Node):
                 f"'{folder_path}' is not a valid directory")
             return
 
-        files = sorted(
-            os.path.join(folder_path, name)
-            for name in os.listdir(folder_path)
-            if name.lower().endswith(extensions)
-        )
+        if recursive:
+            files = []
+            for root, _dirs, names in os.walk(folder_path):
+                for name in names:
+                    if name.lower().endswith(extensions):
+                        files.append(os.path.join(root, name))
+            # Sorted by path string (not just discovery order), so the
+            # processing order is deterministic across runs regardless of
+            # os.walk()'s directory-visit order.
+            files.sort()
+        else:
+            files = sorted(
+                os.path.join(folder_path, name)
+                for name in os.listdir(folder_path)
+                if name.lower().endswith(extensions)
+            )
 
         if not files:
             self.get_logger().error(
                 f'No images with extensions {extensions} found in '
-                f"image_folder_path='{folder_path}'")
+                f"image_folder_path='{folder_path}'"
+                f"{' (recursive)' if recursive else ''}")
             return
 
         self.image_folder_files_ = files
+        self.image_folder_root_ = folder_path
         self.get_logger().info(
             f'image_folder scan found {len(files)} image(s) in '
-            f"'{folder_path}'")
+            f"'{folder_path}'{' (recursive)' if recursive else ''}")
+
+    def _relative_image_name(self, image_path):
+        root = self.image_folder_root_ or \
+            self.get_parameter('image_folder_path').value
+        try:
+            return os.path.relpath(image_path, root)
+        except ValueError:
+            return os.path.basename(image_path)
 
     def _detect_objects_in_image(self, image_path):
+        image_name = self._relative_image_name(image_path)
+        self._reset_perf_timers()
+
+        t_acquire = time.perf_counter()
         frame = None
         if not CV2_AVAILABLE:
             self.get_logger().error(
@@ -270,18 +334,23 @@ class VisionPerceptionNode(Node):
             if frame is None:
                 self.get_logger().error(
                     f"Failed to load image from image_path='{image_path}'")
+        self._last_acquire_ms_ = (time.perf_counter() - t_acquire) * 1000.0
 
         objects = None
         if self.get_parameter('enable_onnx_inference').value \
                 and frame is not None:
             objects = self._run_onnx_pipeline(frame)
+            if objects is not None:
+                self._last_provider_ = self._current_onnx_provider()
 
         if objects is None:
             if self.get_parameter('enable_mock_detection').value:
                 objects = [self._build_mock_object()]
             else:
                 objects = []
+            self._last_provider_ = 'mock'
 
+        self._log_vision_perf(image_name, len(objects))
         return objects
 
     def _advance_folder_index(self):
@@ -294,6 +363,42 @@ class VisionPerceptionNode(Node):
             elif not self.image_folder_finished_logged_:
                 self.get_logger().info('Image folder scan completed')
                 self.image_folder_finished_logged_ = True
+
+    def _tick_image_folder_vision_only_mode(self):
+        """benchmark_mode=vision_only: pure ONNX throughput measurement.
+
+        Skips the SortResult wait and (by default) the detection publish
+        entirely, so a full image_folder scan isn't gated on
+        task_manager/MoveIt at all -- only [VisionPerf]/ONNX detection
+        logging matters here.
+        """
+        if not self.image_folder_files_:
+            return
+
+        total = len(self.image_folder_files_)
+
+        if self.image_folder_index_ >= total:
+            if self.get_parameter('loop_folder').value:
+                self.image_folder_index_ = 0
+            else:
+                if not self.image_folder_finished_logged_:
+                    self.get_logger().info('Image folder scan completed')
+                    self.image_folder_finished_logged_ = True
+                return
+
+        image_path = self.image_folder_files_[self.image_folder_index_]
+        image_name = self._relative_image_name(image_path)
+
+        self.get_logger().info(
+            f'Processing image [{self.image_folder_index_ + 1}/{total}]: '
+            f'{image_name}')
+
+        objects = self._detect_objects_in_image(image_path)
+
+        if self.get_parameter('publish_detections_in_vision_only').value:
+            self._publish_objects_for_current_image(objects, image_name)
+
+        self.image_folder_index_ += 1
 
     def _tick_image_folder_time_mode(self):
         if not self.image_folder_files_:
@@ -312,7 +417,7 @@ class VisionPerceptionNode(Node):
                 return
 
         image_path = self.image_folder_files_[self.image_folder_index_]
-        image_name = os.path.basename(image_path)
+        image_name = self._relative_image_name(image_path)
 
         self.get_logger().info(
             f'Processing image [{self.image_folder_index_ + 1}/{total}]: '
@@ -341,7 +446,7 @@ class VisionPerceptionNode(Node):
             return
 
         image_path = self.image_folder_files_[self.image_folder_index_]
-        image_name = os.path.basename(image_path)
+        image_name = self._relative_image_name(image_path)
         self.current_image_path_ = image_path
 
         self.get_logger().info(
@@ -414,7 +519,7 @@ class VisionPerceptionNode(Node):
         if elapsed_sec < result_wait_timeout_sec:
             return
 
-        image_name = os.path.basename(self.current_image_path_)
+        image_name = self._relative_image_name(self.current_image_path_)
         self.get_logger().warn(
             f'Result wait timeout for image {image_name}, '
             f'pending_object_ids={self.pending_object_ids_}; '
@@ -437,7 +542,7 @@ class VisionPerceptionNode(Node):
         if self.pending_object_ids_:
             return
 
-        image_name = os.path.basename(self.current_image_path_)
+        image_name = self._relative_image_name(self.current_image_path_)
         self.get_logger().info(
             f'All pending objects for image {image_name} completed, '
             f'advancing to next image')
@@ -453,6 +558,73 @@ class VisionPerceptionNode(Node):
         self.publisher_.publish(msg)
         self.get_logger().info(
             f'Published {len(msg.objects)} detections from {image_name}')
+
+    # ---------- performance instrumentation ----------
+
+    def _reset_perf_timers(self):
+        self._last_acquire_ms_ = 0.0
+        self._last_preprocess_ms_ = 0.0
+        self._last_inference_ms_ = 0.0
+        self._last_postprocess_ms_ = 0.0
+        self._last_provider_ = 'none'
+
+    def _current_onnx_provider(self):
+        if self.onnx_session_ is None:
+            return 'unknown'
+        try:
+            return self.onnx_session_.get_providers()[0]
+        except Exception:
+            return 'unknown'
+
+    def _log_vision_perf(self, image_name, detections_count):
+        total_ms = (
+            self._last_acquire_ms_ + self._last_preprocess_ms_
+            + self._last_inference_ms_ + self._last_postprocess_ms_)
+        fps = 1000.0 / total_ms if total_ms > 0.0 else 0.0
+
+        recent_perf_window = self.get_parameter('recent_perf_window').value
+        self.recent_perf_samples_.append({
+            'total_ms': total_ms,
+            'inference_ms': self._last_inference_ms_,
+            'fps': fps,
+        })
+        if len(self.recent_perf_samples_) > recent_perf_window:
+            self.recent_perf_samples_.pop(0)
+
+        if not self.get_parameter('enable_vision_perf_logging').value:
+            return
+
+        self.perf_log_counter_ += 1
+        vision_perf_log_period = max(
+            1, self.get_parameter('vision_perf_log_period').value)
+        if self.perf_log_counter_ % vision_perf_log_period != 0:
+            return
+
+        onnx_input_size = self.get_parameter('onnx_input_size').value
+
+        self.get_logger().info(
+            f'[VisionPerf] source={self.image_source_} image={image_name} '
+            f'input_size={onnx_input_size} detections={detections_count} '
+            f'acquire={self._last_acquire_ms_:.1f}ms '
+            f'preprocess={self._last_preprocess_ms_:.1f}ms '
+            f'inference={self._last_inference_ms_:.1f}ms '
+            f'postprocess={self._last_postprocess_ms_:.1f}ms '
+            f'total={total_ms:.1f}ms fps={fps:.1f} '
+            f'provider={self._last_provider_}')
+
+        if len(self.recent_perf_samples_) >= 2:
+            n = len(self.recent_perf_samples_)
+            avg_total = sum(
+                s['total_ms'] for s in self.recent_perf_samples_) / n
+            avg_inference = sum(
+                s['inference_ms'] for s in self.recent_perf_samples_) / n
+            avg_fps = sum(
+                s['fps'] for s in self.recent_perf_samples_) / n
+            self.get_logger().info(
+                f'[VisionPerf][avg over last {n}] '
+                f'avg_total={avg_total:.1f}ms '
+                f'avg_inference={avg_inference:.1f}ms '
+                f'avg_fps={avg_fps:.1f}')
 
     # ---------- ONNX model setup ----------
 
@@ -516,9 +688,16 @@ class VisionPerceptionNode(Node):
         return np.ascontiguousarray(batched, dtype=np.float32)
 
     def run_onnx_inference(self, frame):
+        t_preprocess = time.perf_counter()
         input_tensor = self.preprocess_yolo(frame)
+        self._last_preprocess_ms_ = (
+            time.perf_counter() - t_preprocess) * 1000.0
+
+        t_inference = time.perf_counter()
         outputs = self.onnx_session_.run(
             self.onnx_output_names_, {self.onnx_input_name_: input_tensor})
+        self._last_inference_ms_ = (
+            time.perf_counter() - t_inference) * 1000.0
 
         self.get_logger().info(
             f'ONNX raw output shapes: {[out.shape for out in outputs]}')
@@ -593,26 +772,44 @@ class VisionPerceptionNode(Node):
             return
 
         if self.image_source_ == 'image_folder':
-            if self.get_parameter('folder_advance_mode').value == 'result':
+            if self.benchmark_mode_ == 'vision_only':
+                self._tick_image_folder_vision_only_mode()
+            elif self.get_parameter('folder_advance_mode').value == 'result':
                 self._tick_image_folder_result_mode()
             else:
                 self._tick_image_folder_time_mode()
             return
 
+        self._reset_perf_timers()
+        image_name = self._current_source_image_name()
+
+        t_acquire = time.perf_counter()
         frame = self._acquire_frame()
+        self._last_acquire_ms_ = (time.perf_counter() - t_acquire) * 1000.0
 
         if self.get_parameter('enable_onnx_inference').value \
                 and self.image_source_ in ('image_file', 'camera') \
                 and frame is not None:
             new_objects = self._run_onnx_pipeline(frame)
             if new_objects is not None:
+                self._last_provider_ = self._current_onnx_provider()
                 self.active_objects_.extend(new_objects)
+                self._log_vision_perf(image_name, len(new_objects))
                 self._publish_active_objects()
                 return
 
         if self.get_parameter('enable_mock_detection').value:
             self._spawn_mock_object()
+            self._last_provider_ = 'mock'
+            self._log_vision_perf(image_name, 1)
             self._publish_active_objects()
+        else:
+            self._log_vision_perf(image_name, 0)
+
+    def _current_source_image_name(self):
+        if self.image_source_ == 'image_file':
+            return os.path.basename(self.get_parameter('image_path').value)
+        return self.image_source_
 
     def _run_onnx_pipeline(self, frame):
         if self.onnx_session_ is None:
@@ -622,7 +819,11 @@ class VisionPerceptionNode(Node):
             return None
 
         outputs = self.run_onnx_inference(frame)
+
+        t_postprocess = time.perf_counter()
         detections = self.postprocess_yolo(outputs, frame.shape)
+        self._last_postprocess_ms_ = (
+            time.perf_counter() - t_postprocess) * 1000.0
 
         if detections is None:
             return None

@@ -78,6 +78,13 @@ def generate_launch_description():
         description='Comma-separated file extensions to include when scanning image_folder_path',
     )
 
+    recursive_image_folder_arg = DeclareLaunchArgument(
+        'recursive_image_folder',
+        default_value='false',
+        description='Scan image_folder_path recursively (subfolders included) instead of '
+                     'only its direct contents',
+    )
+
     loop_folder_arg = DeclareLaunchArgument(
         'loop_folder',
         default_value='false',
@@ -113,6 +120,48 @@ def generate_launch_description():
                      "only the top-scoring one (known objects preferred "
                      "over unknown), or 'all_objects' publishes all of "
                      "them (may hit result_wait_timeout_sec for the rest)",
+    )
+
+    benchmark_mode_arg = DeclareLaunchArgument(
+        'benchmark_mode',
+        default_value='end_to_end',
+        description="'end_to_end' runs the full detection-publish + "
+                     "result-wait sequencer; 'vision_only' skips "
+                     "SortResult waiting (and by default, publishing) so "
+                     "an image_folder scan measures pure ONNX throughput "
+                     "without task_manager/MoveIt in the loop",
+    )
+
+    publish_detections_in_vision_only_arg = DeclareLaunchArgument(
+        'publish_detections_in_vision_only',
+        default_value='false',
+        description='When benchmark_mode=vision_only, also publish to '
+                     '/perception/detected_objects (still does not wait '
+                     'for a SortResult)',
+    )
+
+    enable_vision_perf_logging_arg = DeclareLaunchArgument(
+        'enable_vision_perf_logging',
+        default_value='true',
+        description='Log [VisionPerf] acquire/preprocess/inference/postprocess timings',
+    )
+
+    vision_perf_log_period_arg = DeclareLaunchArgument(
+        'vision_perf_log_period',
+        default_value='1',
+        description='Log [VisionPerf] every Nth inference (1 = every one)',
+    )
+
+    recent_perf_window_arg = DeclareLaunchArgument(
+        'recent_perf_window',
+        default_value='20',
+        description='Number of recent perf samples kept for the rolling [VisionPerf][avg] log',
+    )
+
+    publish_vision_metrics_arg = DeclareLaunchArgument(
+        'publish_vision_metrics',
+        default_value='false',
+        description='Reserved for a future vision metrics topic; not implemented yet',
     )
 
     known_confidence_threshold_arg = DeclareLaunchArgument(
@@ -173,6 +222,12 @@ def generate_launch_description():
         LaunchConfiguration('onnx_input_size'), value_type=int)
     summary_period_sec = ParameterValue(
         LaunchConfiguration('summary_period_sec'), value_type=float)
+    recursive_image_folder = ParameterValue(
+        LaunchConfiguration('recursive_image_folder'), value_type=bool)
+    benchmark_mode = LaunchConfiguration('benchmark_mode')
+    publish_detections_in_vision_only = ParameterValue(
+        LaunchConfiguration('publish_detections_in_vision_only'),
+        value_type=bool)
     loop_folder = ParameterValue(
         LaunchConfiguration('loop_folder'), value_type=bool)
     publish_once_per_image = ParameterValue(
@@ -191,6 +246,14 @@ def generate_launch_description():
         LaunchConfiguration('min_unknown_confidence'), value_type=float)
     min_unknown_graspability = ParameterValue(
         LaunchConfiguration('min_unknown_graspability'), value_type=float)
+    enable_vision_perf_logging = ParameterValue(
+        LaunchConfiguration('enable_vision_perf_logging'), value_type=bool)
+    vision_perf_log_period = ParameterValue(
+        LaunchConfiguration('vision_perf_log_period'), value_type=int)
+    recent_perf_window = ParameterValue(
+        LaunchConfiguration('recent_perf_window'), value_type=int)
+    publish_vision_metrics = ParameterValue(
+        LaunchConfiguration('publish_vision_metrics'), value_type=bool)
 
     panda_demo_launch = os.path.join(
         get_package_share_directory('moveit_resources_panda_moveit_config'),
@@ -243,11 +306,19 @@ def generate_launch_description():
                     'onnx_input_size': onnx_input_size,
                     'image_folder_path': image_folder_path,
                     'image_extensions': image_extensions,
+                    'recursive_image_folder': recursive_image_folder,
+                    'benchmark_mode': benchmark_mode,
+                    'publish_detections_in_vision_only':
+                        publish_detections_in_vision_only,
                     'loop_folder': loop_folder,
                     'publish_once_per_image': publish_once_per_image,
                     'folder_advance_mode': folder_advance_mode,
                     'result_wait_timeout_sec': result_wait_timeout_sec,
                     'folder_result_policy': folder_result_policy,
+                    'enable_vision_perf_logging': enable_vision_perf_logging,
+                    'vision_perf_log_period': vision_perf_log_period,
+                    'recent_perf_window': recent_perf_window,
+                    'publish_vision_metrics': publish_vision_metrics,
                 }],
             ),
         ],
@@ -301,11 +372,18 @@ def generate_launch_description():
         summary_period_sec_arg,
         image_folder_path_arg,
         image_extensions_arg,
+        recursive_image_folder_arg,
+        benchmark_mode_arg,
+        publish_detections_in_vision_only_arg,
         loop_folder_arg,
         publish_once_per_image_arg,
         folder_advance_mode_arg,
         result_wait_timeout_sec_arg,
         folder_result_policy_arg,
+        enable_vision_perf_logging_arg,
+        vision_perf_log_period_arg,
+        recent_perf_window_arg,
+        publish_vision_metrics_arg,
         known_confidence_threshold_arg,
         graspability_threshold_arg,
         absolute_min_graspability_arg,

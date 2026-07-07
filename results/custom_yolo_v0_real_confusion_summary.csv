@@ -1,0 +1,11 @@
+ground_truth,predicted_class,count
+can,can,1
+can,no_detection,1
+can,paper,8
+glass_bottle,no_detection,1
+glass_bottle,paper,9
+paper_cup,paper,10
+plastic_bottle,no_detection,1
+plastic_bottle,paper,9
+unknown,no_detection,2
+unknown,paper,8

@@ -48,3 +48,22 @@ models/*.engine
 models/*.pt
 models/*.onnx
 models/*.engine
+
+# datasets
+datasets/recycling_yolo_candidates/
+datasets/recycling_yolo_candidates_v1/
+datasets/recycling_yolo_autolabel_v0/images/
+datasets/recycling_yolo_autolabel_v0/labels/
+datasets/recycling_yolo_autolabel_v0/previews/
+datasets/recycling_yolo_material_v1/images/
+datasets/recycling_yolo_material_v1/labels/
+datasets/recycling_yolo_material_v1/previews/
+
+# local evaluation images
+test_images_real/
+
+# virtual env
+.venv-autolabel/
+
+# YOLO training run artifacts (weights, plots, caches)
+runs/

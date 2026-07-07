@@ -8,14 +8,21 @@ decision layer with no ROS2 message dependency, so it's callable both from
 vision_perception_node.py at runtime and from offline log analysis
 (tools/analyze_real_image_detections.py).
 
+This module isn't itself aware of model_class_mode (vision_perception_
+node.py's coco vs recycling_custom switch) -- KNOWN_CLASSES/SUPPORTED_
+EMITTED_CLASSES below are simply the union of both taxonomies' class
+names, so the same policy logic stays correct regardless of which model
+produced the detections.
+
 Design notes on the two branches not spelled out by a numbered policy rule:
-  - mapping_gap_possible: today's YOLO/COCO class mapping
-    (COCO_CLASS_ID_TO_PROJECT_CLASS in vision_perception_node.py) never
-    emits "can"/"glass_bottle" as class_name -- only SUPPORTED_EMITTED_
-    CLASSES actually occurs in practice. If a detection ever shows up with
-    one of these class names anyway (future model/mapping change), that's
-    outside today's verified behavior, so it goes to MANUAL_REVIEW instead
-    of being silently sorted or rejected.
+  - mapping_gap_possible: under model_class_mode=coco, COCO_CLASS_ID_TO_
+    PROJECT_CLASS never emits "can"/"glass_bottle" as class_name --
+    that gap is exactly what model_class_mode=recycling_custom (custom_
+    autolabel_v0) exists to close, and its 4 classes are already in
+    SUPPORTED_EMITTED_CLASSES. In practice this makes this branch
+    unreachable today (KNOWN_CLASSES is now a subset of SUPPORTED_
+    EMITTED_CLASSES) -- it's kept for defensiveness in case a future
+    taxonomy reintroduces a known-but-not-emittable class.
   - unsupported_class_mapping: a class_name outside KNOWN_CLASSES entirely
     (neither a known project class nor "unknown") is treated the same way
     -- MANUAL_REVIEW rather than guessing.
@@ -34,12 +41,18 @@ Priority order (most confident/safety-critical checks first):
   7. plain confidence-tier decision on a known, currently-emittable top1
 """
 
-# Objects the sorting cell is designed to route to a specific bin.
-KNOWN_CLASSES = {"plastic_bottle", "paper_cup", "can", "glass_bottle"}
+# Objects the sorting cell is designed to route to a specific bin, across
+# all three taxonomies: model_class_mode=coco (plastic_bottle/paper_cup),
+# model_class_mode=recycling_custom (plastic/paper/can/glass_bottle), and
+# model_class_mode=recycling_material_v1 (plastic/metal/glass/paper).
+KNOWN_CLASSES = {
+    "plastic_bottle", "paper_cup",  # coco taxonomy
+    "plastic", "paper", "can", "glass_bottle",  # recycling_custom taxonomy
+    "metal", "glass",  # recycling_material_v1 taxonomy (plastic/paper above)
+}
 
-# Project classes the current YOLO/COCO mapping can actually emit as
-# class_name today. can/glass_bottle are in KNOWN_CLASSES but not here.
-SUPPORTED_EMITTED_CLASSES = {"plastic_bottle", "paper_cup", "unknown"}
+# Project classes either model can actually emit as class_name today.
+SUPPORTED_EMITTED_CLASSES = KNOWN_CLASSES | {"unknown"}
 
 ACCEPT_SORT = "ACCEPT_SORT"
 ROUTE_TO_REJECT = "ROUTE_TO_REJECT"

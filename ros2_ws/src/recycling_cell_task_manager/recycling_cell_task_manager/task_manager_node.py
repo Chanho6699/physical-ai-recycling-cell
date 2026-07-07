@@ -16,10 +16,19 @@ from recycling_cell_msgs.msg import DetectedObjectArray, RobotState, SortResult
 UNKNOWN_SCORE_PENALTY = 0.8
 
 CLASS_TO_BIN = {
+    # model_class_mode=coco (pretrained COCO YOLO)
     'plastic_bottle': 'plastic_bin',
-    'can': 'metal_bin',
     'paper_cup': 'paper_bin',
+    # model_class_mode=recycling_custom (custom_autolabel_v0) -- 'can'/
+    # 'glass_bottle' are shared with the coco taxonomy above.
+    'plastic': 'plastic_bin',
+    'paper': 'paper_bin',
+    'can': 'metal_bin',
     'glass_bottle': 'glass_bin',
+    # model_class_mode=recycling_material_v1 -- 'plastic'/'paper' are
+    # shared with recycling_custom above.
+    'metal': 'metal_bin',
+    'glass': 'glass_bin',
 }
 DEFAULT_BIN_ID = 'reject_bin'
 

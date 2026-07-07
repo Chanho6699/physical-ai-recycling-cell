@@ -60,6 +60,18 @@ def generate_launch_description():
         description='Square input resolution the ONNX model expects',
     )
 
+    model_class_mode_arg = DeclareLaunchArgument(
+        'model_class_mode',
+        default_value='coco',
+        description="Which class_id -> class_name mapping the ONNX model "
+                     "output uses: 'coco' (pretrained COCO YOLO, emits "
+                     "plastic_bottle/paper_cup/unknown), "
+                     "'recycling_custom' (custom_autolabel_v0, emits "
+                     "plastic/paper/can/glass_bottle directly), or "
+                     "'recycling_material_v1' (recycling_yolo_material_v1, "
+                     "emits plastic/metal/glass/paper directly)",
+    )
+
     summary_period_sec_arg = DeclareLaunchArgument(
         'summary_period_sec',
         default_value='5.0',
@@ -205,6 +217,7 @@ def generate_launch_description():
     image_source = LaunchConfiguration('image_source')
     image_path = LaunchConfiguration('image_path')
     onnx_model_path = LaunchConfiguration('onnx_model_path')
+    model_class_mode = LaunchConfiguration('model_class_mode')
     image_folder_path = LaunchConfiguration('image_folder_path')
     image_extensions = LaunchConfiguration('image_extensions')
     folder_advance_mode = LaunchConfiguration('folder_advance_mode')
@@ -302,6 +315,7 @@ def generate_launch_description():
                     'camera_index': camera_index,
                     'enable_onnx_inference': enable_onnx_inference,
                     'onnx_model_path': onnx_model_path,
+                    'model_class_mode': model_class_mode,
                     'confidence_threshold': confidence_threshold,
                     'onnx_input_size': onnx_input_size,
                     'image_folder_path': image_folder_path,
@@ -367,6 +381,7 @@ def generate_launch_description():
         camera_index_arg,
         enable_onnx_inference_arg,
         onnx_model_path_arg,
+        model_class_mode_arg,
         confidence_threshold_arg,
         onnx_input_size_arg,
         summary_period_sec_arg,

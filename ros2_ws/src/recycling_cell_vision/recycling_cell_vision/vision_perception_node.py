@@ -37,6 +37,7 @@ VALID_IMAGE_SOURCES = ('synthetic', 'image_file', 'camera', 'image_folder')
 VALID_FOLDER_ADVANCE_MODES = ('time', 'result')
 VALID_FOLDER_RESULT_POLICIES = ('single_best_object', 'all_objects')
 VALID_BENCHMARK_MODES = ('end_to_end', 'vision_only')
+VALID_MODEL_CLASS_MODES = ('coco', 'recycling_custom', 'recycling_material_v1')
 
 # benchmark_mode=vision_only doesn't wait on task_manager/MoveIt at all, so
 # ticks are driven as fast as the executor can dispatch them rather than at
@@ -56,6 +57,16 @@ CLASS_SIZES = {
     'paper_cup': (0.05, 0.05, 0.10),
     'glass_bottle': (0.06, 0.06, 0.20),
     'unknown': (0.08, 0.08, 0.08),
+    # recycling_custom taxonomy (see RECYCLING_CUSTOM_CLASS_ID_TO_PROJECT_
+    # CLASS below) -- 'can'/'glass_bottle' are shared with the coco
+    # taxonomy above and already covered.
+    'plastic': (0.07, 0.07, 0.15),  # generic plastic waste, not just bottles
+    'paper': (0.15, 0.10, 0.02),    # flat paper/paper sheet, not a cup
+    # recycling_material_v1 taxonomy (see RECYCLING_MATERIAL_V1_CLASS_ID_
+    # TO_PROJECT_CLASS below) -- 'plastic'/'paper' are shared with
+    # recycling_custom above and already covered.
+    'metal': (0.06, 0.06, 0.11),  # same footprint as a generic can
+    'glass': (0.06, 0.06, 0.20),  # same footprint as glass_bottle
 }
 
 # Kept within the Panda arm's reachable workspace (same convention as
@@ -73,6 +84,27 @@ MOCK_POSE_Z = 0.05
 COCO_CLASS_ID_TO_PROJECT_CLASS = {
     39: 'plastic_bottle',  # COCO 'bottle'
     41: 'paper_cup',       # COCO 'cup'
+}
+
+# custom_autolabel_v0 (see docs/groundingdino_autolabeling_plan.md) is
+# trained directly on this 4-class taxonomy, so its ONNX output class_id
+# already IS the project class -- no COCO indirection needed.
+RECYCLING_CUSTOM_CLASS_ID_TO_PROJECT_CLASS = {
+    0: 'plastic',
+    1: 'paper',
+    2: 'can',
+    3: 'glass_bottle',
+}
+
+# recycling_yolo_material_v1 (see docs/recycling_material_v1_dataset_plan.md)
+# uses a coarser material-level taxonomy trained to address custom_
+# autolabel_v0's "paper collapse" failure -- same class-id-is-already-the
+# -project-class mapping as recycling_custom, just a different taxonomy.
+RECYCLING_MATERIAL_V1_CLASS_ID_TO_PROJECT_CLASS = {
+    0: 'plastic',
+    1: 'metal',
+    2: 'glass',
+    3: 'paper',
 }
 
 
@@ -103,6 +135,7 @@ class VisionPerceptionNode(Node):
         self.declare_parameter('confidence_threshold', 0.50)
         self.declare_parameter('nms_threshold', 0.45)
         self.declare_parameter('use_mock_pose_for_onnx', True)
+        self.declare_parameter('model_class_mode', 'coco')
 
         self.declare_parameter('image_folder_path', '')
         self.declare_parameter('image_extensions', '.jpg,.jpeg,.png')
@@ -156,6 +189,16 @@ class VisionPerceptionNode(Node):
                 f"to 'end_to_end'. Valid options: {VALID_BENCHMARK_MODES}")
             benchmark_mode = 'end_to_end'
         self.benchmark_mode_ = benchmark_mode
+
+        model_class_mode = self.get_parameter('model_class_mode').value
+        if model_class_mode not in VALID_MODEL_CLASS_MODES:
+            self.get_logger().warn(
+                f"Unknown model_class_mode '{model_class_mode}', falling "
+                f"back to 'coco'. Valid options: {VALID_MODEL_CLASS_MODES}")
+            model_class_mode = 'coco'
+        self.model_class_mode_ = model_class_mode
+        self.get_logger().info(
+            f'[VisionModel] model_class_mode={self.model_class_mode_}')
 
         self.publisher_ = self.create_publisher(
             DetectedObjectArray, '/perception/detected_objects', 10)
@@ -800,8 +843,13 @@ class VisionPerceptionNode(Node):
 
     # ---------- class mapping / pose mapping ----------
 
-    @staticmethod
-    def map_class_id_to_class_name(class_id):
+    def map_class_id_to_class_name(self, class_id):
+        if self.model_class_mode_ == 'recycling_custom':
+            return RECYCLING_CUSTOM_CLASS_ID_TO_PROJECT_CLASS.get(
+                class_id, 'unknown')
+        if self.model_class_mode_ == 'recycling_material_v1':
+            return RECYCLING_MATERIAL_V1_CLASS_ID_TO_PROJECT_CLASS.get(
+                class_id, 'unknown')
         return COCO_CLASS_ID_TO_PROJECT_CLASS.get(class_id, 'unknown')
 
     @staticmethod

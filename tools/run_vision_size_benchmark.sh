@@ -22,9 +22,22 @@
 #   RUN_DURATION_SEC=30 \
 #   tools/run_vision_size_benchmark.sh
 #
-# Requires: models/yolo11n_<size>.onnx to already exist for each size
-# (see tools/export_yolo_onnx_sizes.py) and the ROS2 workspace to already
-# be built (colcon build in ros2_ws).
+#   # custom_autolabel_v0 model instead of the pretrained COCO model --
+#   # MODEL_STEM must match tools/export_recycling_yolo_autolabel_v0_onnx.sh's
+#   # OUTPUT naming (models/<MODEL_STEM>_<size>.onnx), and MODEL_CLASS_MODE
+#   # must be recycling_custom so vision_perception_node decodes class_id
+#   # 0-3 as plastic/paper/can/glass_bottle instead of COCO ids:
+#   MODEL_STEM=yolo11n_recycling_autolabel_v0 \
+#   MODEL_CLASS_MODE=recycling_custom \
+#   IMAGE_FOLDER_PATH=/path/to/test_images_real \
+#   RECURSIVE_IMAGE_FOLDER=true \
+#   BENCHMARK_MODE=vision_only \
+#   tools/run_vision_size_benchmark.sh 640
+#
+# Requires: models/<MODEL_STEM>_<size>.onnx to already exist for each size
+# (see tools/export_yolo_onnx_sizes.py for the pretrained COCO models, or
+# tools/export_recycling_yolo_autolabel_v0_onnx.sh for the custom model)
+# and the ROS2 workspace to already be built (colcon build in ros2_ws).
 
 set -euo pipefail
 
@@ -35,6 +48,13 @@ DEFAULT_IMAGE_FOLDER="$PROJECT_ROOT/test_images"
 IMAGE_FOLDER="${IMAGE_FOLDER_PATH:-$DEFAULT_IMAGE_FOLDER}"
 RECURSIVE_IMAGE_FOLDER="${RECURSIVE_IMAGE_FOLDER:-false}"
 BENCHMARK_MODE="${BENCHMARK_MODE:-end_to_end}"
+MODEL_STEM="${MODEL_STEM:-yolo11n}"
+MODEL_CLASS_MODE="${MODEL_CLASS_MODE:-coco}"
+
+if [ "$MODEL_CLASS_MODE" != "coco" ] && [ "$MODEL_CLASS_MODE" != "recycling_custom" ]; then
+  echo "ERROR: MODEL_CLASS_MODE must be 'coco' or 'recycling_custom', got '${MODEL_CLASS_MODE}'" >&2
+  exit 1
+fi
 
 if [ "$BENCHMARK_MODE" != "end_to_end" ] && [ "$BENCHMARK_MODE" != "vision_only" ]; then
   echo "ERROR: BENCHMARK_MODE must be 'end_to_end' or 'vision_only', got '${BENCHMARK_MODE}'" >&2
@@ -80,8 +100,8 @@ source "$ROS2_WS/install/setup.bash"
 set -u
 
 for size in "${SIZES[@]}"; do
-  model_path="$MODELS_DIR/yolo11n_${size}.onnx"
-  log_path="$LOG_DIR/yolo11n_${size}.log"
+  model_path="$MODELS_DIR/${MODEL_STEM}_${size}.onnx"
+  log_path="$LOG_DIR/${MODEL_STEM}_${size}.log"
 
   if [ ! -f "$model_path" ]; then
     echo "SKIP size=${size}: model not found at ${model_path}"
@@ -90,7 +110,7 @@ for size in "${SIZES[@]}"; do
   fi
 
   echo "== Running benchmark for input_size=${size} (benchmark_mode=${BENCHMARK_MODE}) =="
-  echo "   model:     ${model_path}"
+  echo "   model:     ${model_path} (model_class_mode=${MODEL_CLASS_MODE})"
   echo "   log:       ${log_path}"
   echo "   dataset:   ${IMAGE_FOLDER} (recursive=${RECURSIVE_IMAGE_FOLDER})"
 
@@ -108,6 +128,7 @@ for size in "${SIZES[@]}"; do
       -p recursive_image_folder:="$RECURSIVE_IMAGE_FOLDER" \
       -p enable_onnx_inference:=true \
       -p onnx_model_path:="$model_path" \
+      -p model_class_mode:="$MODEL_CLASS_MODE" \
       -p onnx_input_size:="$size" \
       -p confidence_threshold:=0.5 \
       -p benchmark_mode:=vision_only \
@@ -123,6 +144,7 @@ for size in "${SIZES[@]}"; do
       recursive_image_folder:="$RECURSIVE_IMAGE_FOLDER" \
       enable_onnx_inference:=true \
       onnx_model_path:="$model_path" \
+      model_class_mode:="$MODEL_CLASS_MODE" \
       onnx_input_size:="$size" \
       confidence_threshold:=0.5 \
       benchmark_mode:=end_to_end \
@@ -145,7 +167,7 @@ for size in "${SIZES[@]}"; do
 
   echo "== Summary for input_size=${size} =="
   grep -E \
-    '\[VisionPerf\]|ONNX detection|overall_success|Image folder scan completed' \
+    '\[VisionModel\]|\[VisionPerf\]|ONNX detection|overall_success|Image folder scan completed' \
     "$log_path" || echo "  (no matching lines found -- check ${log_path})"
   echo
 done

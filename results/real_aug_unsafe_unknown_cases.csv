@@ -1,0 +1,14 @@
+source_model,image_path,threshold,predicted_class,confidence,bbox_x1,bbox_y1,bbox_x2,bbox_y2,decision,reason,num_detections,preview_path
+baseline,unknown/unknown_bottle_cap_003.jpg.jpg,0.3,plastic,0.37,1.0,-4.5,2452.4,2780.4,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_bottle_cap_003.jpg.jpg
+baseline,unknown/unknown_bottle_cap_003.jpg.jpg,0.1,plastic,0.37,1.0,-4.5,2452.4,2780.4,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_bottle_cap_003.jpg.jpg
+baseline,unknown/unknown_bottle_cap_003.jpg.jpg,0.05,plastic,0.37,1.0,-4.5,2452.4,2780.4,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_bottle_cap_003.jpg.jpg
+real_aug,unknown/unknown_bottle_cap_003.jpg.jpg,0.3,plastic,0.31,91.9,17.0,2406.8,2879.2,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_bottle_cap_003.jpg.jpg
+real_aug,unknown/unknown_bottle_cap_003.jpg.jpg,0.1,plastic,0.31,91.9,17.0,2406.8,2879.2,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_bottle_cap_003.jpg.jpg
+real_aug,unknown/unknown_bottle_cap_003.jpg.jpg,0.05,plastic,0.31,91.9,17.0,2406.8,2879.2,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_bottle_cap_003.jpg.jpg
+real_aug,unknown/unknown_charger_007.jpg.jpg,0.1,paper,0.26,18.2,-14.3,3014.6,3533.8,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_charger_007.jpg.jpg
+real_aug,unknown/unknown_charger_007.jpg.jpg,0.05,paper,0.26,18.2,-14.3,3014.6,3533.8,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_charger_007.jpg.jpg
+real_aug,unknown/unknown_snack_bag_002.jpg.jpg,0.1,paper,0.27,980.6,174.9,2293.8,2211.4,ACCEPT_SORT,known_high_confidence,2,test_images_real/unknown/unknown_snack_bag_002.jpg.jpg
+real_aug,unknown/unknown_snack_bag_002.jpg.jpg,0.05,paper,0.27,980.6,174.9,2293.8,2211.4,ACCEPT_SORT,known_high_confidence,2,test_images_real/unknown/unknown_snack_bag_002.jpg.jpg
+real_aug,unknown/unknown_tissue_001.jpg.jpg,0.3,paper,0.44,578.0,21.0,2676.2,2515.4,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_tissue_001.jpg.jpg
+real_aug,unknown/unknown_tissue_001.jpg.jpg,0.1,paper,0.44,578.0,21.0,2676.2,2515.4,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_tissue_001.jpg.jpg
+real_aug,unknown/unknown_tissue_001.jpg.jpg,0.05,paper,0.44,578.0,21.0,2676.2,2515.4,ACCEPT_SORT,known_high_confidence,1,test_images_real/unknown/unknown_tissue_001.jpg.jpg

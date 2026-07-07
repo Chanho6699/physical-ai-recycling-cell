@@ -1,0 +1,5 @@
+target_class,total_images,labeled,no_box,excluded,error,too_large_bbox,too_small_bbox,low_confidence,boundary_clamped,avg_bbox_area_ratio,avg_confidence
+plastic,35,35,0,0,0,0,0,0,9,0.2867,0.9291
+metal,24,24,0,0,0,0,0,0,0,0.1238,0.9331
+glass,10,10,0,0,0,0,0,0,1,0.1311,0.7769
+paper,22,22,0,0,0,0,0,0,8,0.3243,0.7478

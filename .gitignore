@@ -58,6 +58,10 @@ datasets/recycling_yolo_autolabel_v0/previews/
 datasets/recycling_yolo_material_v1/images/
 datasets/recycling_yolo_material_v1/labels/
 datasets/recycling_yolo_material_v1/previews/
+datasets/recycling_yolo_material_v1_real_aug/images/
+datasets/recycling_yolo_material_v1_real_aug/labels/
+datasets/recycling_yolo_material_v1_real_aug/previews/
+datasets/recycling_material_real_selected/
 
 # local evaluation images
 test_images_real/

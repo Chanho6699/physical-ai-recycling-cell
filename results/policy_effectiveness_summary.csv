@@ -1,0 +1,10 @@
+threshold,input_size,accept_total,accept_correct,accept_misclassified,accept_false_known,accept_unknown_or_no_detection,unsafe_accept_count,unsafe_accept_rate,risky_total,blocked_risky_count,blocked_risky_rate,known_correct_total,missed_correct_count,missed_correct_rate
+0.3,640,17,9,8,0,0,8,0.471,18,10,0.556,14,5,0.357
+0.3,416,22,10,12,0,0,12,0.545,18,6,0.333,12,2,0.167
+0.3,320,20,9,11,0,0,11,0.55,17,6,0.353,12,3,0.25
+0.5,640,14,8,6,0,0,6,0.429,12,6,0.5,11,3,0.273
+0.5,416,18,8,10,0,0,10,0.556,16,6,0.375,9,1,0.111
+0.5,320,15,7,8,0,0,8,0.533,14,6,0.429,8,1,0.125
+0.7,640,11,6,5,0,0,5,0.455,11,6,0.545,8,2,0.25
+0.7,416,12,5,7,0,0,7,0.583,12,5,0.417,6,1,0.167
+0.7,320,13,5,8,0,0,8,0.615,12,4,0.333,5,0,0.0

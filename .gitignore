@@ -71,3 +71,12 @@ test_images_real/
 
 # YOLO training run artifacts (weights, plots, caches)
 runs/
+
+datasets/
+runs/
+models/*.onnx
+models/*.pt
+models/*.engine
+.venv-autolabel/
+.tmp_pip/
+test_images_real/

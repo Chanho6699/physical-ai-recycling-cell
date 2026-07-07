@@ -1,4 +1,4 @@
-input_size,avg_total_ms,avg_inference_ms,avg_fps,images_processed,detections_summary,published_counts,success_count,success_total,all_success,scan_completed
-320,22.6,15.0,54.3,cup.jpg;test.jpg,cup.jpg:paper_cup(0.94);test.jpg:unknown(0.92),cup.jpg:1;test.jpg:1,2,2,True,True
-416,29.7,25.6,37.3,cup.jpg;test.jpg,cup.jpg:paper_cup(0.95);test.jpg:unknown(0.95)+unknown(0.63),cup.jpg:1;test.jpg:1,2,2,True,True
-640,59.5,46.8,16.8,cup.jpg;test.jpg,cup.jpg:paper_cup(0.86);test.jpg:unknown(0.87)+unknown(0.60),cup.jpg:1;test.jpg:1,2,2,True,True
+input_size,benchmark_mode,dataset,image_folder_path,recursive_image_folder,avg_total_ms,avg_inference_ms,avg_fps,images_processed,detections_summary,published_counts,success_count,success_total,all_success,scan_completed
+320,end_to_end,test_images,/home/rlack/Projects/physical-ai-recycling-cell/test_images,False,22.6,15.0,54.3,cup.jpg;test.jpg,cup.jpg:paper_cup(0.94);test.jpg:unknown(0.92),cup.jpg:1;test.jpg:1,2,2,True,True
+416,end_to_end,test_images,/home/rlack/Projects/physical-ai-recycling-cell/test_images,False,29.7,25.6,37.3,cup.jpg;test.jpg,cup.jpg:paper_cup(0.95);test.jpg:unknown(0.95)+unknown(0.63),cup.jpg:1;test.jpg:1,2,2,True,True
+640,end_to_end,test_images,/home/rlack/Projects/physical-ai-recycling-cell/test_images,False,59.5,46.8,16.8,cup.jpg;test.jpg,cup.jpg:paper_cup(0.86);test.jpg:unknown(0.87)+unknown(0.60),cup.jpg:1;test.jpg:1,2,2,True,True

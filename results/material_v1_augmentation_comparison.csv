@@ -1,0 +1,13 @@
+model,threshold,total_images,images_with_detection,images_with_detection_pct,predicted_class_distribution,can_to_metal_correct,can_total,glass_bottle_to_glass_correct,glass_bottle_total,plastic_bottle_to_plastic_correct,plastic_bottle_total,paper_cup_to_paper_correct,paper_cup_total,unknown_accept_sort_risky,unknown_total,avg_inference_ms,avg_total_ms,dominant_predicted_class,dominant_class_share,class_collapse
+baseline,0.5,50,0,0.0,no_detection:50,0,10,0,10,0,10,0,10,0,10,56.18,226.01,no_detection,0.0,False
+baseline,0.3,50,2,4.0,no_detection:48;metal:1;plastic:1,1,10,0,10,0,10,0,10,1,10,56.18,226.01,metal,0.5,False
+baseline,0.1,50,2,4.0,no_detection:48;metal:1;plastic:1,1,10,0,10,0,10,0,10,1,10,56.18,226.01,metal,0.5,False
+baseline,0.05,50,2,4.0,no_detection:48;metal:1;plastic:1,1,10,0,10,0,10,0,10,1,10,56.18,226.01,metal,0.5,False
+medium,0.5,50,2,4.0,no_detection:48;metal:1;glass:1,1,10,0,10,0,10,0,10,0,10,51.43,174.98,metal,0.5,False
+medium,0.3,50,4,8.0,no_detection:46;glass:2;metal:1;plastic:1,1,10,0,10,0,10,0,10,0,10,51.43,174.98,glass,0.5,False
+medium,0.1,50,4,8.0,no_detection:46;glass:2;metal:1;plastic:1,1,10,0,10,0,10,0,10,0,10,51.43,174.98,glass,0.5,False
+medium,0.05,50,4,8.0,no_detection:46;glass:2;metal:1;plastic:1,1,10,0,10,0,10,0,10,0,10,51.43,174.98,glass,0.5,False
+strong,0.5,50,3,6.0,no_detection:47;metal:2;plastic:1,2,10,0,10,0,10,0,10,0,10,26.97,117.58,metal,0.667,False
+strong,0.3,50,4,8.0,no_detection:46;metal:2;plastic:1;paper:1,2,10,0,10,0,10,1,10,0,10,26.97,117.58,metal,0.5,False
+strong,0.1,50,4,8.0,no_detection:46;metal:2;plastic:1;paper:1,2,10,0,10,0,10,1,10,0,10,26.97,117.58,metal,0.5,False
+strong,0.05,50,4,8.0,no_detection:46;metal:2;plastic:1;paper:1,2,10,0,10,0,10,1,10,0,10,26.97,117.58,metal,0.5,False
